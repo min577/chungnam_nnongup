@@ -20,6 +20,7 @@ import {
   exportRoiJSON,
   exportSpectraCSV,
   exportSpectraLongCSV,
+  parseSpectraCSV,
 } from "@/lib/csv";
 
 type ViewMode = "rgb" | "gray" | "ndvi";
@@ -119,7 +120,10 @@ export default function Page() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labelInput, setLabelInput] = useState("");
   const [labelingId, setLabelingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
   const labelToastRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const [status, setStatus] = useState<{ msg: string; err?: boolean } | null>(null);
   const [calib, setCalib] = useState<"applied" | "pre" | "raw" | null>(null);
@@ -535,6 +539,59 @@ export default function Page() {
     [pushHistory]
   );
 
+  // ---- Re-import previously exported ROI CSV and re-draw the annotations ----
+  const importRoiCSV = async (files: FileList | null) => {
+    if (!files || !files.length) return;
+    if (!cube) {
+      setStatus({ msg: "먼저 초분광 영상을 연 뒤 CSV를 불러오세요.", err: true });
+      return;
+    }
+    try {
+      const parsed = parseSpectraCSV(await files[0].text());
+      if (!parsed.length) {
+        setStatus({ msg: "CSV에서 ROI를 찾지 못했습니다.", err: true });
+        return;
+      }
+      pushHistory();
+      const imported: Roi[] = parsed.map((p, i) => ({
+        id: p.id || nextId(),
+        kind: p.kind,
+        points: p.points,
+        label: p.label || p.kind,
+        color: PALETTE[i % PALETTE.length],
+        // prefer recomputing from the current cube; fall back to CSV spectrum
+        ...(() => {
+          const { spectrum, pixelCount } = meanSpectrum(cube, p.points);
+          return spectrum ? { spectrum, pixelCount } : { spectrum: p.spectrum, pixelCount: p.pixelCount };
+        })(),
+      }));
+      // keep id counter ahead of any imported numeric ids
+      for (const p of parsed) {
+        const m = /(\d+)$/.exec(p.id || "");
+        if (m) roiCounter = Math.max(roiCounter, parseInt(m[1], 10));
+      }
+      setRois(imported);
+      setSelectedId(null);
+      setStatus({ msg: `${imported.length}개 ROI를 CSV에서 불러와 표시했습니다.` });
+    } catch (e) {
+      setStatus({ msg: `CSV 불러오기 실패: ${(e as Error).message}`, err: true });
+    }
+  };
+
+  const startRename = (r: Roi) => {
+    setEditingId(r.id);
+    setEditingValue(r.label);
+  };
+  const commitRename = () => {
+    if (!editingId) return;
+    const val = editingValue.trim();
+    pushHistory();
+    setRois((rs) =>
+      rs.map((r) => (r.id === editingId ? { ...r, label: val || r.kind } : r))
+    );
+    setEditingId(null);
+  };
+
   const selected = rois.find((r) => r.id === selectedId) || null;
 
   useEffect(() => {
@@ -678,6 +735,22 @@ export default function Page() {
           <div className="titles">
             <h1>초분광 ROI 추출기</h1>
             <p>충청남도농업기술원 · Specim IQ 반사율 분석 (Polygon / BBox / SAM)</p>
+          </div>
+          <div className="affil" title="개발: AGIS Lab · 경희대학교">
+            {/* eslint-disable @next/next/no-img-element */}
+            <img
+              className="affil-logo"
+              src="/logo-agis.png"
+              alt="AGIS Lab"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            <img
+              className="affil-logo"
+              src="/logo-khu.png"
+              alt="경희대학교"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            {/* eslint-enable @next/next/no-img-element */}
           </div>
         </div>
 
@@ -990,25 +1063,6 @@ export default function Page() {
           )}
         </div>
 
-        <div className="spacer" />
-
-        <div className="panel credits">
-          <h3>개발 · 소속</h3>
-          <div className="logos">
-            {/* eslint-disable @next/next/no-img-element */}
-            <img
-              src="/logo-agis.png"
-              alt="AGIS · Agriculture Intelligence Systems Lab"
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-            <img
-              src="/logo-khu.png"
-              alt="Kyung Hee University"
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-            {/* eslint-enable @next/next/no-img-element */}
-          </div>
-        </div>
       </aside>
 
       {/* CENTER STAGE */}
@@ -1125,10 +1179,46 @@ export default function Page() {
               >
                 <span className="roi-swatch" style={{ background: r.color }} />
                 <span className="meta">
-                  <div className="lab">{r.label}</div>
+                  {editingId === r.id ? (
+                    <input
+                      className="roi-rename"
+                      autoFocus
+                      value={editingValue}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setEditingValue(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          commitRename();
+                        } else if (e.key === "Escape") setEditingId(null);
+                      }}
+                    />
+                  ) : (
+                    <div
+                      className="lab"
+                      title="더블클릭하여 이름 수정"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        startRename(r);
+                      }}
+                    >
+                      {r.label}
+                    </div>
+                  )}
                   <div className="px">
                     {r.kind} · {r.pixelCount ?? 0} px
                   </div>
+                </span>
+                <span
+                  className="x"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startRename(r);
+                  }}
+                  title="이름 수정"
+                >
+                  ✎
                 </span>
                 <span
                   className="x"
@@ -1187,6 +1277,25 @@ export default function Page() {
               ROI JSON
             </button>
           </div>
+          <button
+            className="block"
+            style={{ marginTop: 8 }}
+            disabled={!cube}
+            onClick={() => csvInputRef.current?.click()}
+            title="이전에 내보낸 spectra CSV를 불러와 ROI를 다시 표시"
+          >
+            ⤓ ROI CSV 불러오기
+          </button>
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              importRoiCSV(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </div>
 
         {status && (

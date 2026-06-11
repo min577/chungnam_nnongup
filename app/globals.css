@@ -206,6 +206,21 @@ input[type="range"]::-webkit-slider-thumb {
   display: block;
   flex-shrink: 0;
 }
+.brand .affil {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: 10px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.brand .affil-logo {
+  height: 24px;
+  width: auto;
+  display: block;
+  opacity: 0.92;
+}
 .brand .titles h1 {
   font-size: 14.5px;
   font-weight: 700;
@@ -570,9 +585,14 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
+.roi-rename {
+  width: 100%;
+  font-size: 13px;
+  padding: 4px 7px;
+}
 .roi-item .x {
   color: var(--ink-3);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
   padding: 3px 4px;
   border-radius: 5px;
