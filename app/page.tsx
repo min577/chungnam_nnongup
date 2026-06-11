@@ -276,6 +276,17 @@ export default function Page() {
     setZoom(Math.round(z * 20) / 20);
   }, [W, H]);
 
+  // Reset RGB / gray / NDVI band selections to their defaults for the current cube
+  const resetBands = useCallback(() => {
+    if (!cube) return;
+    const wl = cube.header.wavelengths;
+    setBands(cube.header.defaultBands ?? [70, 53, 19]);
+    setGrayBand(wl.length ? nearestBand(wl, 700) : Math.round(cube.header.bands / 2));
+    setRedBand(nearestBand(wl, 670));
+    setNirBand(nearestBand(wl, 800));
+    setStatus({ msg: "표시 밴드를 기본값으로 초기화했습니다." });
+  }, [cube]);
+
   // ---- Build native-resolution canvas (for SAM) whenever base image changes ----
   useEffect(() => {
     if (!baseImage) {
@@ -745,6 +756,20 @@ export default function Page() {
     };
   }, []);
 
+  // Ctrl + mouse wheel (and trackpad pinch) to zoom the image
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return; // plain wheel scrolls normally
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setZoom((z) => Math.max(0.25, Math.min(6, +(z * factor).toFixed(2))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   const startPan = (e: React.MouseEvent) => {
     if (!spaceHeld || !stageRef.current) return;
     panRef.current = {
@@ -986,6 +1011,10 @@ export default function Page() {
               </>
             )}
 
+            <button className="block" style={{ margin: "2px 0 12px" }} onClick={resetBands}>
+              ↺ 표시 밴드 기본값으로 초기화
+            </button>
+
             <div className="field" style={{ marginTop: 4 }}>
               <label>
                 <span>확대</span>
@@ -1009,7 +1038,7 @@ export default function Page() {
                 </button>
               </div>
               <p className="hint" style={{ marginTop: 6 }}>
-                Ctrl + ＋/− 확대·축소 · Space + 드래그 이동
+                Ctrl + 휠/＋/− 확대·축소 · Space + 드래그 이동
               </p>
             </div>
 
