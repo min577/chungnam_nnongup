@@ -613,6 +613,39 @@ canvas.annot {
   margin-top: 5px;
 }
 
+/* ---------- Calibration badge ---------- */
+.calib-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  border: 1px solid var(--line);
+}
+.calib-badge .ic {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+.calib-badge.applied {
+  background: var(--brand-soft);
+  border-color: #b6e6c6;
+  color: var(--brand-strong);
+}
+.calib-badge.pre {
+  background: #eaf2ff;
+  border-color: #c3dbff;
+  color: #1f5fce;
+}
+.calib-badge.raw {
+  background: #fff5e6;
+  border-color: #ffd9a3;
+  color: #9a5b00;
+}
+
 /* ---------- Status toast ---------- */
 .status {
   font-size: 12.5px;

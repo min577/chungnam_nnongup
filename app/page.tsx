@@ -5,6 +5,7 @@ import AnnotationCanvas, { CanvasHandle, Tool } from "@/components/AnnotationCan
 import SpectrumChart from "@/components/SpectrumChart";
 import { Cube, Point, Roi, ShapeKind } from "@/lib/types";
 import { compositeRGB, loadCube, meanSpectrum } from "@/lib/envi";
+import { calibrateCube } from "@/lib/calibrate";
 import { maskToPolygon } from "@/lib/geometry";
 import * as sam from "@/lib/sam";
 import {
@@ -82,6 +83,7 @@ export default function Page() {
   const [labelInput, setLabelInput] = useState("");
 
   const [status, setStatus] = useState<{ msg: string; err?: boolean } | null>(null);
+  const [calib, setCalib] = useState<"applied" | "pre" | "raw" | null>(null);
   const [samBusy, setSamBusy] = useState(false);
   const [samReadyFor, setSamReadyFor] = useState<string | null>(null);
   const [hasDraft, setHasDraft] = useState(false);
@@ -107,8 +109,18 @@ export default function Page() {
 
   const nativeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasApi = useRef<CanvasHandle>(null);
+
+  // Enable directory picking on the folder input (non-standard attribute)
+  useEffect(() => {
+    const el = folderInputRef.current;
+    if (el) {
+      el.setAttribute("webkitdirectory", "");
+      el.setAttribute("directory", "");
+    }
+  }, []);
 
   const W = cube?.header.samples ?? 512;
   const H = cube?.header.lines ?? 512;
@@ -148,35 +160,94 @@ export default function Page() {
     }
   }, [cube, bands]);
 
-  // ---- File loading ----
+  // ---- File loading (classifies sample / white / dark, calibrates if possible) ----
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
       const arr = Array.from(files);
-      const hdr = arr.find((f) => f.name.toLowerCase().endsWith(".hdr"));
-      const dat =
-        arr.find((f) => /reflectance.*\.(dat|img|raw)$/i.test(f.name)) ||
-        arr.find((f) => /\.(dat|img|raw)$/i.test(f.name));
-      if (!hdr || !dat) {
+      const hdrs = arr.filter((f) => /\.hdr$/i.test(f.name));
+      const datas = arr.filter((f) => /\.(dat|img|raw)$/i.test(f.name));
+      const hdrFor = (data: File) => {
+        const base = data.name.replace(/\.(dat|img|raw)$/i, "").toLowerCase();
+        return hdrs.find((h) => h.name.replace(/\.hdr$/i, "").toLowerCase() === base);
+      };
+      const maxBySize = (fs: File[]) =>
+        fs.length ? fs.reduce((a, b) => (b.size > a.size ? b : a)) : undefined;
+
+      const isRef = (f: File) => /WHITEREF|DARKREF/i.test(f.name);
+      const whiteData = datas.find((f) => /WHITEREF/i.test(f.name));
+      const darkData = datas.find((f) => /DARKREF/i.test(f.name));
+      const candidates = datas.filter((f) => !isRef(f));
+      // If references are present the user wants calibration → use the raw cube,
+      // not a pre-made REFLECTANCE file.
+      const rawCandidates =
+        whiteData && darkData
+          ? candidates.filter((f) => !/reflectance/i.test(f.name))
+          : [];
+      const sampleData = maxBySize(
+        rawCandidates.length ? rawCandidates : candidates
+      );
+
+      if (!sampleData || !hdrFor(sampleData)) {
         setStatus({
-          msg: ".hdr 파일과 데이터 파일(.dat / .raw / .img)을 함께 선택하세요.",
+          msg: "데이터(.dat/.raw/.img)와 같은 이름의 .hdr를 함께 선택하세요.",
           err: true,
         });
         return;
       }
-      setStatus({ msg: `${dat.name} 로딩 중… (${(dat.size / 1e6).toFixed(0)} MB)` });
+
+      const canCalibrate =
+        whiteData && darkData && hdrFor(whiteData) && hdrFor(darkData);
+      const name = sampleData.name.replace(/\.(dat|img|raw)$/i, "");
+
       try {
-        const [hdrText, buf] = await Promise.all([hdr.text(), dat.arrayBuffer()]);
-        const name = dat.name.replace(/\.(dat|img|raw)$/i, "");
-        const c = loadCube(hdrText, buf, name);
-        setCube(c);
+        setStatus({
+          msg: `${sampleData.name} 로딩 중… (${(sampleData.size / 1e6).toFixed(0)} MB)`,
+        });
+        const sampleCube = loadCube(
+          await hdrFor(sampleData)!.text(),
+          await sampleData.arrayBuffer(),
+          name
+        );
+
+        let finalCube = sampleCube;
+        let mode: "applied" | "pre" | "raw";
+
+        if (canCalibrate) {
+          setStatus({ msg: "WHITE/DARK 레퍼런스로 반사율 보정 중…" });
+          const whiteCube = loadCube(
+            await hdrFor(whiteData!)!.text(),
+            await whiteData!.arrayBuffer(),
+            "white"
+          );
+          const darkCube = loadCube(
+            await hdrFor(darkData!)!.text(),
+            await darkData!.arrayBuffer(),
+            "dark"
+          );
+          finalCube = calibrateCube(sampleCube, whiteCube, darkCube);
+          mode = "applied";
+        } else if (/reflectance/i.test(sampleData.name) || sampleCube.header.dataType === 4) {
+          mode = "pre"; // already-reflectance float cube
+        } else {
+          mode = "raw"; // raw DN, no references supplied
+        }
+
+        setCube(finalCube);
+        setCalib(mode);
         setBaseName(name);
-        setBands(c.header.defaultBands ?? [70, 53, 19]);
+        setBands(finalCube.header.defaultBands ?? [70, 53, 19]);
         setRois([]);
         setPast([]);
         setSelectedId(null);
         setStatus({
-          msg: `로드 완료 · ${c.header.samples}×${c.header.lines} · ${c.header.bands} 밴드 · ${c.header.interleave.toUpperCase()}`,
+          msg:
+            mode === "applied"
+              ? `반사율 보정 완료 · ${finalCube.header.samples}×${finalCube.header.lines} · ${finalCube.header.bands} 밴드`
+              : mode === "pre"
+              ? `로드 완료 (이미 반사율) · ${finalCube.header.samples}×${finalCube.header.lines} · ${finalCube.header.bands} 밴드`
+              : `원시 DN 로드됨 — 보정 안 됨. WHITEREF/DARKREF를 함께 올리세요.`,
+          err: mode === "raw",
         });
         setTimeout(fitZoom, 30);
       } catch (e) {
@@ -382,9 +453,18 @@ export default function Page() {
               handleFiles(e.dataTransfer.files);
             }}
           >
-            <div className="dz-title">.hdr + .dat 선택 / 드롭</div>
-            <div className="dz-sub">results/REFLECTANCE_*.dat 와 .hdr를 함께</div>
+            <div className="dz-title">파일 선택 / 드롭</div>
+            <div className="dz-sub">
+              capture의 robot_*.raw + WHITEREF + DARKREF (+각 .hdr) → 반사율 자동 보정
+            </div>
           </div>
+          <button
+            className="block"
+            style={{ marginTop: 8 }}
+            onClick={() => folderInputRef.current?.click()}
+          >
+            📁 캡처 폴더 통째로 선택
+          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -393,6 +473,28 @@ export default function Page() {
             style={{ display: "none" }}
             onChange={(e) => handleFiles(e.target.files)}
           />
+          <input
+            ref={folderInputRef}
+            type="file"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+          {calib && (
+            <div className={`calib-badge ${calib}`}>
+              <span className="ic">
+                {calib === "applied" ? "✓" : calib === "pre" ? "ℹ" : "⚠"}
+              </span>
+              <span>
+                {calib === "applied" &&
+                  "WHITE/DARK 반사율 보정 적용됨 — 스펙트럼이 0–1 반사율 단위입니다."}
+                {calib === "pre" &&
+                  "이미 반사율(REFLECTANCE) 데이터입니다 — 추가 보정 불필요."}
+                {calib === "raw" &&
+                  "원시 DN입니다 — WHITEREF/DARKREF를 함께 올려야 식물 반사율이 나옵니다."}
+              </span>
+            </div>
+          )}
         </div>
 
         {cube && (
@@ -515,8 +617,11 @@ export default function Page() {
         {!cube ? (
           <div className="stage-empty">
             <div className="big">초분광 영상을 불러오세요</div>
-            왼쪽에서 Specim IQ 캡처의 <b style={{ color: "#cdd6e2" }}>.hdr</b> 와{" "}
-            <b style={{ color: "#cdd6e2" }}>.dat</b> 파일을 함께 선택하면 여기에 표시됩니다.
+            왼쪽에서 Specim IQ <b style={{ color: "#cdd6e2" }}>capture 폴더</b>를 선택하면
+            (robot_*.raw + WHITEREF + DARKREF) 자동으로 반사율 보정 후 표시됩니다.
+            <br />
+            이미 보정된 <b style={{ color: "#cdd6e2" }}>REFLECTANCE</b> 파일도 바로 열 수
+            있습니다.
             <div className="lock">🔒 모든 처리는 브라우저 안에서만 이뤄집니다</div>
           </div>
         ) : (
