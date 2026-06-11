@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AnnotationCanvas, { CanvasHandle, Tool } from "@/components/AnnotationCanvas";
 import SpectrumChart from "@/components/SpectrumChart";
+import SpectrumModal from "@/components/SpectrumModal";
 import { Cube, Point, Roi, ShapeKind } from "@/lib/types";
 import {
   compositeRGB,
@@ -112,6 +113,7 @@ export default function Page() {
   const [baseImage, setBaseImage] = useState<ImageData | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [logoOk, setLogoOk] = useState(true);
+  const [spectrumOpen, setSpectrumOpen] = useState(false);
   const panRef = useRef({ active: false, startX: 0, startY: 0, sl: 0, st: 0 });
 
   const [tool, setTool] = useState<Tool>("polygon");
@@ -1333,7 +1335,18 @@ export default function Page() {
         </div>
 
         <div className="panel">
-          <h3>평균 반사율 스펙트럼</h3>
+          <h3>
+            평균 반사율 스펙트럼
+            <button
+              className="ghost"
+              style={{ marginLeft: "auto", padding: "3px 9px", fontSize: 12 }}
+              disabled={!hasSpectra}
+              onClick={() => setSpectrumOpen(true)}
+              title="크게 보기 (휠로 확대·축소)"
+            >
+              ⤢ 크게
+            </button>
+          </h3>
           <SpectrumChart wavelengths={wavelengths} rois={rois} highlightId={selectedId} />
         </div>
 
@@ -1392,6 +1405,15 @@ export default function Page() {
           </div>
         )}
       </aside>
+
+      {spectrumOpen && (
+        <SpectrumModal
+          wavelengths={wavelengths}
+          rois={rois}
+          highlightId={selectedId}
+          onClose={() => setSpectrumOpen(false)}
+        />
+      )}
     </div>
   );
 }

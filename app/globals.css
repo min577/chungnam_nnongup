@@ -916,6 +916,110 @@ canvas.annot {
   color: #9a5b00;
 }
 
+/* ---------- Spectrum modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(12, 16, 22, 0.55);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  animation: toast-in 0.14s ease-out;
+}
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  width: min(1040px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  padding: 18px 20px 16px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.modal-head h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+.modal-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-tools .zoom-tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.spectrum-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  cursor: crosshair;
+  touch-action: none;
+}
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.readout b {
+  color: var(--ink);
+}
+.readout .ro-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+}
+.readout .ro-sw {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+}
+.legend-row .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.legend-row .lg-sw {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
 /* ---------- Status toast ---------- */
 .status {
   font-size: 12.5px;
