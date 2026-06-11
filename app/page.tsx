@@ -24,6 +24,26 @@ import {
 
 type ViewMode = "rgb" | "gray" | "ndvi";
 
+// One independent workspace per uploaded capture (shown as a tab).
+type DocState = {
+  cube: Cube | null;
+  baseName: string;
+  calib: "applied" | "pre" | "raw" | null;
+  bands: [number, number, number];
+  viewMode: ViewMode;
+  grayBand: number;
+  redBand: number;
+  nirBand: number;
+  rois: Roi[];
+  selectedId: string | null;
+  past: Roi[][];
+  future: Roi[][];
+  labelInput: string;
+  zoom: number;
+};
+
+let tabCounter = 0;
+
 const PALETTE = [
   "#2f81f7",
   "#12a150",
@@ -110,6 +130,13 @@ export default function Page() {
   // Undo / redo history (snapshots of the ROI list)
   const [past, setPast] = useState<Roi[][]>([]);
   const [future, setFuture] = useState<Roi[][]>([]);
+
+  // Tabs: each upload is an independent document. Inactive docs are parked in
+  // archiveRef; the live state above always mirrors the active tab.
+  const [tabs, setTabs] = useState<{ id: string; name: string }[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const archiveRef = useRef<Map<string, DocState>>(new Map());
+
   const roisRef = useRef<Roi[]>([]);
   useEffect(() => {
     roisRef.current = rois;
@@ -138,6 +165,79 @@ export default function Page() {
       return f.slice(1);
     });
   }, []);
+
+  // ---- Tab document management ----
+  const captureLive = (): DocState => ({
+    cube,
+    baseName,
+    calib,
+    bands,
+    viewMode,
+    grayBand,
+    redBand,
+    nirBand,
+    rois,
+    selectedId,
+    past,
+    future,
+    labelInput,
+    zoom,
+  });
+  const applyDoc = (d: DocState) => {
+    setCube(d.cube);
+    setBaseName(d.baseName);
+    setCalib(d.calib);
+    setBands(d.bands);
+    setViewMode(d.viewMode);
+    setGrayBand(d.grayBand);
+    setRedBand(d.redBand);
+    setNirBand(d.nirBand);
+    setRois(d.rois);
+    setSelectedId(d.selectedId);
+    setPast(d.past);
+    setFuture(d.future);
+    setLabelInput(d.labelInput);
+    setZoom(d.zoom);
+    setLabelingId(null);
+  };
+  const resetLive = () => {
+    setCube(null);
+    setBaseName("capture");
+    setCalib(null);
+    setRois([]);
+    setSelectedId(null);
+    setPast([]);
+    setFuture([]);
+    setLabelInput("");
+    setLabelingId(null);
+    setBaseImage(null);
+  };
+  const switchTab = (id: string) => {
+    if (id === activeId) return;
+    if (activeId) archiveRef.current.set(activeId, captureLive());
+    const d = archiveRef.current.get(id);
+    archiveRef.current.delete(id);
+    if (d) applyDoc(d);
+    setActiveId(id);
+  };
+  const closeTab = (id: string) => {
+    archiveRef.current.delete(id);
+    const idx = tabs.findIndex((t) => t.id === id);
+    const next = tabs.filter((t) => t.id !== id);
+    if (id === activeId) {
+      if (next.length === 0) {
+        resetLive();
+        setActiveId(null);
+      } else {
+        const fb = next[Math.min(idx, next.length - 1)];
+        const d = archiveRef.current.get(fb.id);
+        archiveRef.current.delete(fb.id);
+        if (d) applyDoc(d);
+        setActiveId(fb.id);
+      }
+    }
+    setTabs(next);
+  };
 
   const nativeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -184,7 +284,10 @@ export default function Page() {
 
   // ---- Recompute the displayed composite when cube / mode / bands change ----
   useEffect(() => {
-    if (!cube) return;
+    if (!cube) {
+      setBaseImage(null);
+      return;
+    }
     try {
       if (viewMode === "gray") setBaseImage(compositeGray(cube, grayBand));
       else if (viewMode === "ndvi")
@@ -196,9 +299,9 @@ export default function Page() {
   }, [cube, viewMode, bands, grayBand, redBand, nirBand]);
 
   // ---- File loading (classifies sample / white / dark, calibrates if possible) ----
-  const handleFiles = useCallback(
-    async (files: FileList | null) => {
+  const handleFiles = async (files: FileList | null) => {
       if (!files || files.length === 0) return;
+      const prevDoc = activeId ? captureLive() : null;
       const arr = Array.from(files);
       const hdrs = arr.filter((f) => /\.hdr$/i.test(f.name));
       const datas = arr.filter((f) => /\.(dat|img|raw)$/i.test(f.name));
@@ -268,9 +371,15 @@ export default function Page() {
           mode = "raw"; // raw DN, no references supplied
         }
 
+        if (activeId && prevDoc) archiveRef.current.set(activeId, prevDoc);
+        const newId = `tab_${++tabCounter}`;
+        setTabs((t) => [...t, { id: newId, name }]);
+        setActiveId(newId);
+
         setCube(finalCube);
         setCalib(mode);
         setBaseName(name);
+        setViewMode("rgb");
         setBands(finalCube.header.defaultBands ?? [70, 53, 19]);
         // mode-specific band defaults from wavelengths (Red ~670nm, NIR ~800nm)
         const wl = finalCube.header.wavelengths;
@@ -295,9 +404,7 @@ export default function Page() {
       } catch (e) {
         setStatus({ msg: (e as Error).message, err: true });
       }
-    },
-    [fitZoom]
-  );
+  };
 
   // ---- Lazily set the SAM image when entering SAM tool ----
   useEffect(() => {
@@ -573,6 +680,39 @@ export default function Page() {
             <p>충청남도농업기술원 · Specim IQ 반사율 분석 (Polygon / BBox / SAM)</p>
           </div>
         </div>
+
+        {tabs.length > 0 && (
+          <div className="tabs">
+            {tabs.map((t) => (
+              <div
+                key={t.id}
+                className={`tab ${t.id === activeId ? "active" : ""}`}
+                onClick={() => switchTab(t.id)}
+                title={t.name}
+              >
+                <span className="tname">{t.name}</span>
+                <span
+                  className="tx"
+                  title="탭 닫기"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(t.id);
+                  }}
+                >
+                  ✕
+                </span>
+              </div>
+            ))}
+            <button
+              className="tab-add"
+              title="새 캡처 열기"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              ＋
+            </button>
+          </div>
+        )}
+
         <div className="spacer" />
         {cube && (
           <span className="meta-chip">
