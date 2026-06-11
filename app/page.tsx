@@ -665,15 +665,6 @@ export default function Page() {
     setLabelInput(selected ? selected.label : "");
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const applyLabel = () => {
-    if (!selected) return;
-    pushHistory();
-    setRois((rs) =>
-      rs.map((r) =>
-        r.id === selected.id ? { ...r, label: labelInput.trim() || r.kind } : r
-      )
-    );
-  };
 
   // keyboard shortcuts
   useEffect(() => {
@@ -1013,36 +1004,9 @@ export default function Page() {
               </>
             )}
 
-            <button className="block" style={{ margin: "2px 0 12px" }} onClick={resetBands}>
+            <button className="block" style={{ margin: "2px 0 10px" }} onClick={resetBands}>
               ↺ 표시 밴드 기본값으로 초기화
             </button>
-
-            <div className="field" style={{ marginTop: 4 }}>
-              <label>
-                <span>확대</span>
-                <span className="val">{Math.round(zoom * 100)}%</span>
-              </label>
-              <div className="btn-row">
-                <button onClick={fitZoom} title="화면에 맞춤 (Ctrl+0)">
-                  맞춤
-                </button>
-                <button
-                  onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))}
-                  title="축소 (Ctrl+−)"
-                >
-                  −
-                </button>
-                <button
-                  onClick={() => setZoom((z) => Math.min(6, +(z + 0.25).toFixed(2)))}
-                  title="확대 (Ctrl+＋)"
-                >
-                  ＋
-                </button>
-              </div>
-              <p className="hint" style={{ marginTop: 6 }}>
-                Ctrl + 휠/＋/− 확대·축소 · Space + 드래그 이동
-              </p>
-            </div>
 
             <button
               className="block"
@@ -1053,6 +1017,9 @@ export default function Page() {
             >
               🖼 현재 화면 이미지 저장 (PNG)
             </button>
+            <p className="hint" style={{ marginTop: 8 }}>
+              확대·축소: 마우스 휠 · 이동: Space + 드래그 · 화면 맞춤: Ctrl+0
+            </p>
           </div>
         )}
 
@@ -1093,27 +1060,6 @@ export default function Page() {
               </>
             )}
           </p>
-        </div>
-
-        <div className="panel">
-          <h3>고정 라벨</h3>
-          <input
-            type="text"
-            placeholder="예: 잎, 병징, 배경…"
-            value={labelInput}
-            onChange={(e) => setLabelLive(e.target.value)}
-            onBlur={applyLabel}
-            onKeyDown={(e) => e.key === "Enter" && applyLabel()}
-            style={{ width: "100%" }}
-          />
-          <p className="hint" style={{ marginTop: 8 }}>
-            새 라벨을 입력하기 전까지 이 라벨이 <b>다음 ROI들에 계속 적용</b>됩니다.
-          </p>
-          {selected && (
-            <button className="block" style={{ marginTop: 8 }} onClick={applyLabel}>
-              선택된 ROI에 적용
-            </button>
-          )}
         </div>
 
       </aside>
