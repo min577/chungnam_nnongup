@@ -38,6 +38,9 @@ interface Props {
 }
 
 const VERTEX_HIT = 6; // image px
+// Distance (in image px) within which clicking the first vertex closes the
+// polygon. Defined in *screen* px so it stays easy to hit at any zoom level.
+const closeThreshImg = (zoom: number) => 14 / zoom;
 
 const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanvas(
   {
@@ -160,25 +163,49 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
 
     // Draft polygon
     if (draftPoly.length > 0) {
+      const first = draftPoly[0];
+      const nearFirst =
+        draftPoly.length >= 3 &&
+        mouse != null &&
+        Math.hypot(first.x - mouse.x, first.y - mouse.y) <= closeThreshImg(zoom);
+
       ctx.beginPath();
       ctx.moveTo(sx(draftPoly[0].x), sx(draftPoly[0].y));
       for (let i = 1; i < draftPoly.length; i++)
         ctx.lineTo(sx(draftPoly[i].x), sx(draftPoly[i].y));
-      if (mouse) ctx.lineTo(sx(mouse.x), sx(mouse.y));
+      if (mouse) {
+        // snap the rubber-band end to the first point when it would close
+        const end = nearFirst ? first : mouse;
+        ctx.lineTo(sx(end.x), sx(end.y));
+      }
       ctx.strokeStyle = draftColor;
       ctx.lineWidth = 1.8;
       ctx.setLineDash([6, 4]);
       ctx.stroke();
       ctx.setLineDash([]);
+
       draftPoly.forEach((p, i) => {
+        const isFirst = i === 0;
+        const r = isFirst ? (nearFirst ? 8 : 5) : 3.5;
         ctx.beginPath();
-        ctx.arc(sx(p.x), sx(p.y), i === 0 ? 5 : 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = i === 0 ? "#fff" : draftColor;
+        ctx.arc(sx(p.x), sx(p.y), r, 0, Math.PI * 2);
+        ctx.fillStyle = isFirst ? "#fff" : draftColor;
         ctx.fill();
-        ctx.strokeStyle = draftColor;
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = isFirst && nearFirst ? "#12a150" : draftColor;
+        ctx.lineWidth = isFirst && nearFirst ? 3 : 1.5;
         ctx.stroke();
       });
+
+      if (nearFirst) {
+        // "닫기" cue ring
+        ctx.beginPath();
+        ctx.arc(sx(first.x), sx(first.y), 13, 0, Math.PI * 2);
+        ctx.strokeStyle = "#12a150";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     // Draft bbox
@@ -280,7 +307,8 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
     if (tool === "polygon") {
       if (
         draftPoly.length >= 3 &&
-        Math.hypot(draftPoly[0].x - p.x, draftPoly[0].y - p.y) <= VERTEX_HIT
+        Math.hypot(draftPoly[0].x - p.x, draftPoly[0].y - p.y) <=
+          closeThreshImg(zoom)
       ) {
         finishPolygon();
       } else {
@@ -295,6 +323,17 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
     if (tool === "polygon") finishPolygon();
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    // Right-click completes the polygon (and never shows the browser menu here)
+    if (tool === "polygon" && draftPoly.length >= 1) {
+      e.preventDefault();
+      finishPolygon();
+    } else if (bboxStart || draftPoly.length) {
+      e.preventDefault();
+      cancelDraft();
+    }
+  };
+
   return (
     <div className="stage-inner">
       <canvas
@@ -307,6 +346,7 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
         onMouseUp={handleUp}
         onClick={handleClick}
         onDoubleClick={handleDouble}
+        onContextMenu={handleContextMenu}
         onMouseLeave={() => setMouse(null)}
         style={{
           cursor: samBusy ? "wait" : tool === "select" ? "default" : "crosshair",

@@ -81,6 +81,8 @@ export default function Page() {
   const [rois, setRois] = useState<Roi[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labelInput, setLabelInput] = useState("");
+  const [labelingId, setLabelingId] = useState<string | null>(null);
+  const labelToastRef = useRef<HTMLInputElement>(null);
 
   const [status, setStatus] = useState<{ msg: string; err?: boolean } | null>(null);
   const [calib, setCalib] = useState<"applied" | "pre" | "raw" | null>(null);
@@ -301,8 +303,31 @@ export default function Page() {
       };
       setRois((rs) => [...rs, roi]);
       setSelectedId(id);
+      setLabelingId(id); // open the top-left label toast for this ROI
     },
     [cube, labelInput, pushHistory]
+  );
+
+  // Focus + select the label toast when it opens
+  useEffect(() => {
+    if (labelingId && labelToastRef.current) {
+      labelToastRef.current.focus();
+      labelToastRef.current.select();
+    }
+  }, [labelingId]);
+
+  // Live-apply the typed label to the ROI being named and keep it as the sticky default
+  const setLabelLive = useCallback(
+    (value: string) => {
+      setLabelInput(value);
+      if (!labelingId) return;
+      setRois((rs) =>
+        rs.map((r) =>
+          r.id === labelingId ? { ...r, label: value.trim() || r.kind } : r
+        )
+      );
+    },
+    [labelingId]
   );
 
   const handleSamClick = useCallback(
@@ -563,7 +588,8 @@ export default function Page() {
           <p className="hint" style={{ marginTop: 12 }}>
             {tool === "polygon" && (
               <>
-                클릭으로 점 추가 → <b>첫 점 클릭·더블클릭·Enter</b>로 완성, Esc 취소.
+                클릭으로 점 추가 → <b>우클릭·더블클릭·Enter</b> 또는 첫 점(초록 원)을 클릭해
+                완성, Esc 취소.
               </>
             )}
             {tool === "bbox" && <>드래그하여 사각형 영역을 그립니다.</>}
@@ -581,16 +607,19 @@ export default function Page() {
         </div>
 
         <div className="panel">
-          <h3>다음 ROI 라벨</h3>
+          <h3>고정 라벨</h3>
           <input
             type="text"
             placeholder="예: 잎, 병징, 배경…"
             value={labelInput}
-            onChange={(e) => setLabelInput(e.target.value)}
+            onChange={(e) => setLabelLive(e.target.value)}
             onBlur={applyLabel}
             onKeyDown={(e) => e.key === "Enter" && applyLabel()}
             style={{ width: "100%" }}
           />
+          <p className="hint" style={{ marginTop: 8 }}>
+            새 라벨을 입력하기 전까지 이 라벨이 <b>다음 ROI들에 계속 적용</b>됩니다.
+          </p>
           {selected && (
             <button className="block" style={{ marginTop: 8 }} onClick={applyLabel}>
               선택된 ROI에 적용
@@ -611,6 +640,28 @@ export default function Page() {
                 ✕ 그리기 취소
               </button>
             )}
+          </div>
+        )}
+
+        {labelingId && (
+          <div className="label-toast">
+            <span className="lt-title">ROI 이름</span>
+            <input
+              ref={labelToastRef}
+              type="text"
+              value={labelInput}
+              placeholder="예: 잎, 병징, 배경…"
+              onChange={(e) => setLabelLive(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === "Escape") {
+                  e.preventDefault();
+                  setLabelingId(null);
+                }
+              }}
+            />
+            <button className="lt-ok" onClick={() => setLabelingId(null)}>
+              확인
+            </button>
           </div>
         )}
 
@@ -646,7 +697,9 @@ export default function Page() {
         )}
 
         {hasDraft && tool === "polygon" && (
-          <div className="draw-badge">점을 찍어 영역을 그리고 첫 점을 다시 클릭해 닫으세요</div>
+          <div className="draw-badge">
+            점을 계속 찍고 → <b>우클릭/더블클릭/Enter</b> 또는 첫 점을 클릭해 닫기
+          </div>
         )}
 
         {samBusy && (

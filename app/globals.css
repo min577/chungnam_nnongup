@@ -531,6 +531,60 @@ canvas.annot {
   background: var(--brand-strong);
 }
 
+/* Top-left label toast (names the ROI just drawn) */
+.label-toast {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px 9px 13px;
+  background: rgba(22, 27, 35, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(10px);
+  animation: toast-in 0.16s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+.label-toast .lt-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9fb0c4;
+}
+.label-toast input {
+  width: 168px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  padding: 7px 9px;
+}
+.label-toast input::placeholder {
+  color: #8b97a7;
+}
+.label-toast input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(18, 161, 80, 0.25);
+}
+.label-toast .lt-ok {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  padding: 7px 13px;
+}
+.label-toast .lt-ok:hover {
+  background: var(--brand-strong);
+}
+
 /* Drawing-progress badge */
 .draw-badge {
   position: absolute;
@@ -546,6 +600,10 @@ canvas.annot {
   padding: 7px 14px;
   backdrop-filter: blur(8px);
   box-shadow: var(--shadow);
+}
+.draw-badge b {
+  color: #fff;
+  font-weight: 650;
 }
 
 /* SAM working overlay */
