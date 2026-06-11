@@ -90,22 +90,35 @@ export default function Page() {
   const [samReadyFor, setSamReadyFor] = useState<string | null>(null);
   const [hasDraft, setHasDraft] = useState(false);
 
-  // Undo history (snapshots of the ROI list)
+  // Undo / redo history (snapshots of the ROI list)
   const [past, setPast] = useState<Roi[][]>([]);
+  const [future, setFuture] = useState<Roi[][]>([]);
   const roisRef = useRef<Roi[]>([]);
   useEffect(() => {
     roisRef.current = rois;
   }, [rois]);
   const pushHistory = useCallback(() => {
     setPast((p) => [...p.slice(-49), roisRef.current]);
+    setFuture([]); // a new action invalidates the redo stack
   }, []);
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
+      setFuture((f) => [roisRef.current, ...f].slice(0, 50));
       setRois(prev);
       setSelectedId((s) => (prev.some((r) => r.id === s) ? s : null));
       return p.slice(0, -1);
+    });
+  }, []);
+  const redo = useCallback(() => {
+    setFuture((f) => {
+      if (f.length === 0) return f;
+      const next = f[0];
+      setPast((p) => [...p.slice(-49), roisRef.current]);
+      setRois(next);
+      setSelectedId((s) => (next.some((r) => r.id === s) ? s : null));
+      return f.slice(1);
     });
   }, []);
 
@@ -411,7 +424,13 @@ export default function Page() {
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        undo();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
         return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId)
@@ -423,7 +442,7 @@ export default function Page() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, deleteRoi, undo]);
+  }, [selectedId, deleteRoi, undo, redo]);
 
   const wavelengths = cube?.header.wavelengths ?? [];
   const hasSpectra = rois.some((r) => r.spectrum);
@@ -632,8 +651,15 @@ export default function Page() {
       <main className="stage" ref={stageRef}>
         {cube && (
           <div className="stage-actions">
-            <button onClick={undo} disabled={past.length === 0} title="실행취소 (Ctrl+Z)">
-              ↩ 실행취소
+            <button onClick={undo} disabled={past.length === 0} title="되돌리기 (Ctrl+Z)">
+              ↩ 되돌리기
+            </button>
+            <button
+              onClick={redo}
+              disabled={future.length === 0}
+              title="다시 실행 (Ctrl+Shift+Z / Ctrl+Y)"
+            >
+              ↪ 다시 실행
             </button>
             {hasDraft && (
               <button className="cta" onClick={cancelDraw}>
