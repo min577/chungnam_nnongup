@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // No `output: "export"` — Vercel deploys Next.js natively (the app itself is
-  // fully client-side). For static hosting elsewhere, add `output: "export"`.
+  // Fully static export -> Vercel serves out/ as static files, so NO serverless
+  // functions are created (transformers.js' onnxruntime/wasm binaries would
+  // otherwise blow past the 250 MB function limit). The app is 100% client-side.
+  output: "export",
   images: { unoptimized: true },
   // transformers.js: don't bundle node-only backends in the browser build
   webpack: (config) => {
