@@ -1,11 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { Point, Roi, ShapeKind } from "@/lib/types";
 import { pointInPolygon } from "@/lib/envi";
 import { bboxPoints } from "@/lib/geometry";
 
 export type Tool = "select" | "polygon" | "bbox" | "sam";
+
+export interface CanvasHandle {
+  cancelDraft: () => void;
+  hasDraft: () => boolean;
+}
 
 interface Props {
   baseImage: ImageData | null;
@@ -21,25 +33,32 @@ interface Props {
   onSamClick: (p: Point) => void;
   onSelect: (id: string | null) => void;
   onMoveVertex: (roiId: string, index: number, p: Point) => void;
+  onDraftChange?: (active: boolean) => void;
+  onVertexDragStart?: () => void;
 }
 
 const VERTEX_HIT = 6; // image px
 
-export default function AnnotationCanvas({
-  baseImage,
-  width,
-  height,
-  zoom,
-  tool,
-  rois,
-  selectedId,
-  samBusy,
-  draftColor,
-  onCommitShape,
-  onSamClick,
-  onSelect,
-  onMoveVertex,
-}: Props) {
+const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanvas(
+  {
+    baseImage,
+    width,
+    height,
+    zoom,
+    tool,
+    rois,
+    selectedId,
+    samBusy,
+    draftColor,
+    onCommitShape,
+    onSamClick,
+    onSelect,
+    onMoveVertex,
+    onDraftChange,
+    onVertexDragStart,
+  },
+  ref
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -49,6 +68,21 @@ export default function AnnotationCanvas({
   const [dragVertex, setDragVertex] = useState<{ roiId: string; index: number } | null>(
     null
   );
+
+  const cancelDraft = useCallback(() => {
+    setDraftPoly([]);
+    setBboxStart(null);
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    cancelDraft,
+    hasDraft: () => draftPoly.length > 0 || bboxStart != null,
+  }));
+
+  // Report draft activity to the parent (for the floating cancel button)
+  useEffect(() => {
+    onDraftChange?.(draftPoly.length > 0 || bboxStart != null);
+  }, [draftPoly, bboxStart, onDraftChange]);
 
   // Build offscreen native-resolution canvas from baseImage
   useEffect(() => {
@@ -104,7 +138,7 @@ export default function AnnotationCanvas({
       ctx.moveTo(sx(pts[0].x), sx(pts[0].y));
       for (let i = 1; i < pts.length; i++) ctx.lineTo(sx(pts[i].x), sx(pts[i].y));
       ctx.closePath();
-      ctx.fillStyle = color + "22";
+      ctx.fillStyle = color + "26";
       ctx.fill();
       ctx.strokeStyle = color;
       ctx.lineWidth = selected ? 2.5 : 1.5;
@@ -112,11 +146,11 @@ export default function AnnotationCanvas({
       if (selected) {
         for (const p of pts) {
           ctx.beginPath();
-          ctx.arc(sx(p.x), sx(p.y), 4, 0, Math.PI * 2);
+          ctx.arc(sx(p.x), sx(p.y), 4.5, 0, Math.PI * 2);
           ctx.fillStyle = "#fff";
           ctx.fill();
           ctx.strokeStyle = color;
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 2;
           ctx.stroke();
         }
       }
@@ -132,14 +166,19 @@ export default function AnnotationCanvas({
         ctx.lineTo(sx(draftPoly[i].x), sx(draftPoly[i].y));
       if (mouse) ctx.lineTo(sx(mouse.x), sx(mouse.y));
       ctx.strokeStyle = draftColor;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([6, 4]);
       ctx.stroke();
-      for (const p of draftPoly) {
+      ctx.setLineDash([]);
+      draftPoly.forEach((p, i) => {
         ctx.beginPath();
-        ctx.arc(sx(p.x), sx(p.y), 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = draftColor;
+        ctx.arc(sx(p.x), sx(p.y), i === 0 ? 5 : 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = i === 0 ? "#fff" : draftColor;
         ctx.fill();
-      }
+        ctx.strokeStyle = draftColor;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
     }
 
     // Draft bbox
@@ -148,9 +187,11 @@ export default function AnnotationCanvas({
       const y = sx(Math.min(bboxStart.y, mouse.y));
       const w = sx(Math.abs(mouse.x - bboxStart.x));
       const h = sx(Math.abs(mouse.y - bboxStart.y));
+      ctx.fillStyle = draftColor + "22";
+      ctx.fillRect(x, y, w, h);
       ctx.strokeStyle = draftColor;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([6, 4]);
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
     }
@@ -176,14 +217,11 @@ export default function AnnotationCanvas({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Enter" && tool === "polygon") finishPolygon();
-      if (e.key === "Escape") {
-        setDraftPoly([]);
-        setBboxStart(null);
-      }
+      if (e.key === "Escape") cancelDraft();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tool, finishPolygon]);
+  }, [tool, finishPolygon, cancelDraft]);
 
   // ---- Mouse handlers ----
   const findVertex = (p: Point): { roiId: string; index: number } | null => {
@@ -201,10 +239,10 @@ export default function AnnotationCanvas({
     if (tool === "select") {
       const v = findVertex(p);
       if (v) {
+        onVertexDragStart?.();
         setDragVertex(v);
         return;
       }
-      // select topmost ROI under cursor
       for (let i = rois.length - 1; i >= 0; i--) {
         if (pointInPolygon(p.x, p.y, rois[i].points)) {
           onSelect(rois[i].id);
@@ -270,8 +308,12 @@ export default function AnnotationCanvas({
         onClick={handleClick}
         onDoubleClick={handleDouble}
         onMouseLeave={() => setMouse(null)}
-        style={{ cursor: samBusy ? "wait" : tool === "select" ? "default" : "crosshair" }}
+        style={{
+          cursor: samBusy ? "wait" : tool === "select" ? "default" : "crosshair",
+        }}
       />
     </div>
   );
-}
+});
+
+export default AnnotationCanvas;

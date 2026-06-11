@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AnnotationCanvas, { Tool } from "@/components/AnnotationCanvas";
+import AnnotationCanvas, { CanvasHandle, Tool } from "@/components/AnnotationCanvas";
 import SpectrumChart from "@/components/SpectrumChart";
 import { Cube, Point, Roi, ShapeKind } from "@/lib/types";
 import { compositeRGB, loadCube, meanSpectrum } from "@/lib/envi";
@@ -15,19 +15,59 @@ import {
 
 const PALETTE = [
   "#2f81f7",
-  "#3fb950",
+  "#12a150",
   "#db61a2",
   "#f0883e",
   "#a371f7",
-  "#56d4dd",
+  "#0ea5b7",
   "#e3b341",
-  "#ff7b72",
-  "#7ee787",
-  "#79c0ff",
+  "#ef4444",
+  "#16a34a",
+  "#3b82f6",
 ];
 
 let roiCounter = 0;
 const nextId = () => `roi_${++roiCounter}`;
+
+const ToolIcon = ({ id }: { id: Tool }) => {
+  const common = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.7,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  switch (id) {
+    case "select":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M5 4l6 15 2-6 6-2z" />
+        </svg>
+      );
+    case "polygon":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M12 4l7 5-2.5 8.5h-9L5 9z" />
+          <circle cx="12" cy="4" r="1.4" fill="currentColor" />
+          <circle cx="19" cy="9" r="1.4" fill="currentColor" />
+          <circle cx="5" cy="9" r="1.4" fill="currentColor" />
+        </svg>
+      );
+    case "bbox":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <rect x="4.5" y="6" width="15" height="12" rx="1" strokeDasharray="3 2.5" />
+        </svg>
+      );
+    case "sam":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z" />
+          <path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z" />
+        </svg>
+      );
+  }
+};
 
 export default function Page() {
   const [cube, setCube] = useState<Cube | null>(null);
@@ -44,12 +84,44 @@ export default function Page() {
   const [status, setStatus] = useState<{ msg: string; err?: boolean } | null>(null);
   const [samBusy, setSamBusy] = useState(false);
   const [samReadyFor, setSamReadyFor] = useState<string | null>(null);
+  const [hasDraft, setHasDraft] = useState(false);
+
+  // Undo history (snapshots of the ROI list)
+  const [past, setPast] = useState<Roi[][]>([]);
+  const roisRef = useRef<Roi[]>([]);
+  useEffect(() => {
+    roisRef.current = rois;
+  }, [rois]);
+  const pushHistory = useCallback(() => {
+    setPast((p) => [...p.slice(-49), roisRef.current]);
+  }, []);
+  const undo = useCallback(() => {
+    setPast((p) => {
+      if (p.length === 0) return p;
+      const prev = p[p.length - 1];
+      setRois(prev);
+      setSelectedId((s) => (prev.some((r) => r.id === s) ? s : null));
+      return p.slice(0, -1);
+    });
+  }, []);
 
   const nativeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const canvasApi = useRef<CanvasHandle>(null);
 
   const W = cube?.header.samples ?? 512;
   const H = cube?.header.lines ?? 512;
+
+  const fitZoom = useCallback(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const pad = 56;
+    const zw = (el.clientWidth - pad) / W;
+    const zh = (el.clientHeight - pad) / H;
+    const z = Math.max(0.25, Math.min(6, Math.min(zw, zh)));
+    setZoom(Math.round(z * 20) / 20);
+  }, [W, H]);
 
   // ---- Build native-resolution canvas (for SAM) whenever base image changes ----
   useEffect(() => {
@@ -77,37 +149,42 @@ export default function Page() {
   }, [cube, bands]);
 
   // ---- File loading ----
-  const handleFiles = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const arr = Array.from(files);
-    const hdr = arr.find((f) => f.name.toLowerCase().endsWith(".hdr"));
-    const dat =
-      arr.find((f) => /reflectance.*\.(dat|img|raw)$/i.test(f.name)) ||
-      arr.find((f) => /\.(dat|img|raw)$/i.test(f.name));
-    if (!hdr || !dat) {
-      setStatus({
-        msg: ".hdr 파일과 데이터 파일(.dat / .raw / .img)을 함께 선택하세요.",
-        err: true,
-      });
-      return;
-    }
-    setStatus({ msg: `${dat.name} 로딩 중… (${(dat.size / 1e6).toFixed(0)} MB)` });
-    try {
-      const [hdrText, buf] = await Promise.all([hdr.text(), dat.arrayBuffer()]);
-      const name = dat.name.replace(/\.(dat|img|raw)$/i, "");
-      const c = loadCube(hdrText, buf, name);
-      setCube(c);
-      setBaseName(name);
-      setBands(c.header.defaultBands ?? [70, 53, 19]);
-      setRois([]);
-      setSelectedId(null);
-      setStatus({
-        msg: `로드 완료 · ${c.header.samples}×${c.header.lines} · ${c.header.bands} 밴드 · ${c.header.interleave.toUpperCase()}`,
-      });
-    } catch (e) {
-      setStatus({ msg: (e as Error).message, err: true });
-    }
-  }, []);
+  const handleFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      const arr = Array.from(files);
+      const hdr = arr.find((f) => f.name.toLowerCase().endsWith(".hdr"));
+      const dat =
+        arr.find((f) => /reflectance.*\.(dat|img|raw)$/i.test(f.name)) ||
+        arr.find((f) => /\.(dat|img|raw)$/i.test(f.name));
+      if (!hdr || !dat) {
+        setStatus({
+          msg: ".hdr 파일과 데이터 파일(.dat / .raw / .img)을 함께 선택하세요.",
+          err: true,
+        });
+        return;
+      }
+      setStatus({ msg: `${dat.name} 로딩 중… (${(dat.size / 1e6).toFixed(0)} MB)` });
+      try {
+        const [hdrText, buf] = await Promise.all([hdr.text(), dat.arrayBuffer()]);
+        const name = dat.name.replace(/\.(dat|img|raw)$/i, "");
+        const c = loadCube(hdrText, buf, name);
+        setCube(c);
+        setBaseName(name);
+        setBands(c.header.defaultBands ?? [70, 53, 19]);
+        setRois([]);
+        setPast([]);
+        setSelectedId(null);
+        setStatus({
+          msg: `로드 완료 · ${c.header.samples}×${c.header.lines} · ${c.header.bands} 밴드 · ${c.header.interleave.toUpperCase()}`,
+        });
+        setTimeout(fitZoom, 30);
+      } catch (e) {
+        setStatus({ msg: (e as Error).message, err: true });
+      }
+    },
+    [fitZoom]
+  );
 
   // ---- Lazily set the SAM image when entering SAM tool ----
   useEffect(() => {
@@ -135,18 +212,11 @@ export default function Page() {
     };
   }, [tool, cube, baseName, samReadyFor]);
 
-  const computeSpectrum = useCallback(
-    (points: Point[]) => {
-      if (!cube) return { spectrum: undefined, pixelCount: undefined };
-      const { spectrum, pixelCount } = meanSpectrum(cube, points);
-      return { spectrum, pixelCount };
-    },
-    [cube]
-  );
-
   const addRoi = useCallback(
     (kind: ShapeKind, points: Point[]) => {
-      const { spectrum, pixelCount } = computeSpectrum(points);
+      if (!cube) return;
+      pushHistory();
+      const { spectrum, pixelCount } = meanSpectrum(cube, points);
       const id = nextId();
       const color = PALETTE[(roiCounter - 1) % PALETTE.length];
       const roi: Roi = {
@@ -161,7 +231,7 @@ export default function Page() {
       setRois((rs) => [...rs, roi]);
       setSelectedId(id);
     },
-    [computeSpectrum, labelInput]
+    [cube, labelInput, pushHistory]
   );
 
   const handleSamClick = useCallback(
@@ -174,7 +244,10 @@ export default function Page() {
         if (!res) throw new Error("마스크 없음");
         const poly = maskToPolygon(res.mask, res.width, res.height, 1.5);
         if (poly.length < 3) {
-          setStatus({ msg: "분할 결과가 너무 작습니다. 다른 지점을 클릭해보세요.", err: true });
+          setStatus({
+            msg: "분할 결과가 너무 작습니다. 다른 지점을 클릭해보세요.",
+            err: true,
+          });
         } else {
           addRoi("polygon", poly);
           setStatus({ msg: `SAM 분할 완료 (${poly.length}개 꼭짓점)` });
@@ -188,21 +261,17 @@ export default function Page() {
     [samBusy, samReadyFor, baseName, addRoi]
   );
 
-  const moveVertex = useCallback(
-    (roiId: string, index: number, p: Point) => {
-      setRois((rs) =>
-        rs.map((r) => {
-          if (r.id !== roiId) return r;
-          const points = r.points.slice();
-          points[index] = p;
-          return { ...r, points };
-        })
-      );
-    },
-    []
-  );
+  const moveVertex = useCallback((roiId: string, index: number, p: Point) => {
+    setRois((rs) =>
+      rs.map((r) => {
+        if (r.id !== roiId) return r;
+        const points = r.points.slice();
+        points[index] = p;
+        return { ...r, points };
+      })
+    );
+  }, []);
 
-  // Recompute spectrum after a vertex drag ends (selectedId-based, debounced-ish)
   const recomputeSelected = useCallback(() => {
     if (!selectedId || !cube) return;
     setRois((rs) =>
@@ -214,30 +283,41 @@ export default function Page() {
     );
   }, [selectedId, cube]);
 
-  const deleteRoi = useCallback((id: string) => {
-    setRois((rs) => rs.filter((r) => r.id !== id));
-    setSelectedId((s) => (s === id ? null : s));
-  }, []);
+  const deleteRoi = useCallback(
+    (id: string) => {
+      pushHistory();
+      setRois((rs) => rs.filter((r) => r.id !== id));
+      setSelectedId((s) => (s === id ? null : s));
+    },
+    [pushHistory]
+  );
 
   const selected = rois.find((r) => r.id === selectedId) || null;
 
-  // Sync label input with selection
   useEffect(() => {
     setLabelInput(selected ? selected.label : "");
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyLabel = () => {
     if (!selected) return;
+    pushHistory();
     setRois((rs) =>
-      rs.map((r) => (r.id === selected.id ? { ...r, label: labelInput.trim() || r.kind } : r))
+      rs.map((r) =>
+        r.id === selected.id ? { ...r, label: labelInput.trim() || r.kind } : r
+      )
     );
   };
 
-  // Delete key removes selected ROI
+  // keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT") return;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+        return;
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId)
         deleteRoi(selectedId);
       if (e.key === "1") setTool("select");
@@ -247,14 +327,14 @@ export default function Page() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, deleteRoi]);
+  }, [selectedId, deleteRoi, undo]);
 
   const wavelengths = cube?.header.wavelengths ?? [];
   const hasSpectra = rois.some((r) => r.spectrum);
 
   const tools: { id: Tool; name: string; key: string }[] = useMemo(
     () => [
-      { id: "select", name: "선택/편집", key: "1" },
+      { id: "select", name: "선택·편집", key: "1" },
       { id: "polygon", name: "폴리곤", key: "2" },
       { id: "bbox", name: "박스", key: "3" },
       { id: "sam", name: "SAM 자동", key: "4" },
@@ -262,23 +342,37 @@ export default function Page() {
     []
   );
 
+  const cancelDraw = () => canvasApi.current?.cancelDraft();
+
   return (
     <div className="app">
       <div className="topbar">
-        <h1>충남농업기술원 · 초분광 ROI 추출기</h1>
-        <span className="sub">Specim IQ · Polygon / BBox / SAM → 평균 반사율 CSV</span>
+        <div className="brand">
+          <div className="mark" />
+          <div className="titles">
+            <h1>충남농업기술원 · 초분광 ROI 추출기</h1>
+            <p>Specim IQ · Polygon / BBox / SAM 자동분할 → 평균 반사율 CSV</p>
+          </div>
+        </div>
         <div className="spacer" />
         {cube && (
-          <span className="sub">
-            {baseName} · {W}×{H} · {cube.header.bands} bands
+          <span className="meta-chip">
+            {baseName} · {W}×{H} · {cube.header.bands} bands ·{" "}
+            {cube.header.wavelengths.length
+              ? `${Math.round(cube.header.wavelengths[0])}–${Math.round(
+                  cube.header.wavelengths[cube.header.wavelengths.length - 1]
+                )} nm`
+              : ""}
           </span>
         )}
       </div>
 
       {/* LEFT SIDEBAR */}
-      <div className="sidebar">
-        <div className="section">
-          <h3>1. 데이터 불러오기</h3>
+      <aside className="sidebar left">
+        <div className="panel">
+          <h3>
+            <span className="step">1</span> 데이터 불러오기
+          </h3>
           <div
             className="dropzone"
             onClick={() => fileInputRef.current?.click()}
@@ -288,10 +382,8 @@ export default function Page() {
               handleFiles(e.dataTransfer.files);
             }}
           >
-            <div style={{ fontSize: 13 }}>.hdr + .dat 선택 / 드롭</div>
-            <div style={{ fontSize: 11, marginTop: 4 }}>
-              results/REFLECTANCE_*.dat 와 .hdr를 함께
-            </div>
+            <div className="dz-title">.hdr + .dat 선택 / 드롭</div>
+            <div className="dz-sub">results/REFLECTANCE_*.dat 와 .hdr를 함께</div>
           </div>
           <input
             ref={fileInputRef}
@@ -304,13 +396,15 @@ export default function Page() {
         </div>
 
         {cube && (
-          <div className="section">
+          <div className="panel">
             <h3>RGB 표시 밴드</h3>
             {(["R", "G", "B"] as const).map((ch, i) => (
               <div className="field" key={ch}>
                 <label>
-                  {ch} 밴드: {bands[i]} (
-                  {wavelengths[bands[i] - 1]?.toFixed(0) ?? "?"} nm)
+                  <span>{ch} 밴드</span>
+                  <span className="val">
+                    #{bands[i]} · {wavelengths[bands[i] - 1]?.toFixed(0) ?? "?"} nm
+                  </span>
                 </label>
                 <input
                   type="range"
@@ -328,48 +422,66 @@ export default function Page() {
                 />
               </div>
             ))}
-            <div className="row">
-              <label className="hint">확대</label>
-              <select value={zoom} onChange={(e) => setZoom(parseFloat(e.target.value))}>
-                {[1, 1.5, 2, 3, 4].map((z) => (
-                  <option key={z} value={z}>
-                    {z}×
-                  </option>
-                ))}
-              </select>
+            <div className="field">
+              <label>
+                <span>확대</span>
+                <span className="val">{Math.round(zoom * 100)}%</span>
+              </label>
+              <div className="btn-row">
+                <button onClick={fitZoom}>맞춤</button>
+                <button onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))}>
+                  −
+                </button>
+                <button onClick={() => setZoom((z) => Math.min(6, +(z + 0.25).toFixed(2)))}>
+                  ＋
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        <div className="section">
-          <h3>2. 도구</h3>
+        <div className="panel">
+          <h3>
+            <span className="step">2</span> 도구
+          </h3>
           <div className="tool-grid">
             {tools.map((t) => (
               <button
                 key={t.id}
-                className={tool === t.id ? "active" : ""}
+                className={`tool ${tool === t.id ? "active" : ""}`}
                 disabled={!cube}
                 onClick={() => setTool(t.id)}
               >
+                <ToolIcon id={t.id} />
                 <span className="tname">{t.name}</span>
-                <span className="tkey">[{t.key}]</span>
+                <span className="tkey">{t.key}</span>
               </button>
             ))}
           </div>
-          <p className="hint" style={{ marginTop: 10 }}>
-            {tool === "polygon" &&
-              "클릭으로 점 추가, 첫 점 클릭/더블클릭/Enter로 완성, Esc 취소."}
-            {tool === "bbox" && "드래그하여 사각형 영역을 그립니다."}
-            {tool === "sam" &&
-              "객체 위를 클릭하면 SAM이 자동으로 영역을 따서 폴리곤으로 만듭니다."}
-            {tool === "select" &&
-              "ROI를 클릭해 선택, 꼭짓점을 드래그해 수정, Delete로 삭제."}
+          <p className="hint" style={{ marginTop: 12 }}>
+            {tool === "polygon" && (
+              <>
+                클릭으로 점 추가 → <b>첫 점 클릭·더블클릭·Enter</b>로 완성, Esc 취소.
+              </>
+            )}
+            {tool === "bbox" && <>드래그하여 사각형 영역을 그립니다.</>}
+            {tool === "sam" && (
+              <>
+                객체 위를 <b>클릭</b>하면 SAM이 자동으로 영역을 따 폴리곤으로 만듭니다.
+              </>
+            )}
+            {tool === "select" && (
+              <>
+                ROI 클릭해 선택, <b>꼭짓점 드래그</b>로 수정, Delete로 삭제.
+              </>
+            )}
           </p>
         </div>
 
-        <div className="section">
+        <div className="panel">
           <h3>다음 ROI 라벨</h3>
           <input
+            type="text"
             placeholder="예: 잎, 병징, 배경…"
             value={labelInput}
             onChange={(e) => setLabelInput(e.target.value)}
@@ -378,25 +490,38 @@ export default function Page() {
             style={{ width: "100%" }}
           />
           {selected && (
-            <button style={{ marginTop: 6, width: "100%" }} onClick={applyLabel}>
+            <button className="block" style={{ marginTop: 8 }} onClick={applyLabel}>
               선택된 ROI에 적용
             </button>
           )}
         </div>
-      </div>
+      </aside>
 
       {/* CENTER STAGE */}
-      <div className="stage">
+      <main className="stage" ref={stageRef}>
+        {cube && (
+          <div className="stage-actions">
+            <button onClick={undo} disabled={past.length === 0} title="실행취소 (Ctrl+Z)">
+              ↩ 실행취소
+            </button>
+            {hasDraft && (
+              <button className="cta" onClick={cancelDraw}>
+                ✕ 그리기 취소
+              </button>
+            )}
+          </div>
+        )}
+
         {!cube ? (
-          <div className="hint" style={{ maxWidth: 360, textAlign: "center" }}>
-            왼쪽에서 Specim IQ 캡처의 <b>.hdr</b> 와 <b>.dat</b> 파일을 함께 선택하면
-            영상이 표시됩니다.
-            <br />
-            <br />
-            모든 처리는 브라우저 안에서만 이뤄지며 데이터는 서버로 전송되지 않습니다.
+          <div className="stage-empty">
+            <div className="big">초분광 영상을 불러오세요</div>
+            왼쪽에서 Specim IQ 캡처의 <b style={{ color: "#cdd6e2" }}>.hdr</b> 와{" "}
+            <b style={{ color: "#cdd6e2" }}>.dat</b> 파일을 함께 선택하면 여기에 표시됩니다.
+            <div className="lock">🔒 모든 처리는 브라우저 안에서만 이뤄집니다</div>
           </div>
         ) : (
           <AnnotationCanvas
+            ref={canvasApi}
             baseImage={baseImage}
             width={W}
             height={H}
@@ -408,49 +533,66 @@ export default function Page() {
             draftColor={PALETTE[roiCounter % PALETTE.length]}
             onCommitShape={addRoi}
             onSamClick={handleSamClick}
-            onSelect={(id) => {
-              setSelectedId(id);
-              if (tool !== "select") return;
-            }}
-            onMoveVertex={(rid, idx, p) => {
-              moveVertex(rid, idx, p);
-            }}
+            onSelect={setSelectedId}
+            onMoveVertex={moveVertex}
+            onDraftChange={setHasDraft}
+            onVertexDragStart={pushHistory}
           />
         )}
-      </div>
+
+        {hasDraft && tool === "polygon" && (
+          <div className="draw-badge">점을 찍어 영역을 그리고 첫 점을 다시 클릭해 닫으세요</div>
+        )}
+
+        {samBusy && (
+          <div className="busy-veil">
+            <div className="busy-card">
+              <span className="spinner" />
+              SAM 처리 중…
+            </div>
+          </div>
+        )}
+      </main>
 
       {/* RIGHT SIDEBAR */}
-      <div className="sidebar right">
-        <div className="section">
-          <h3>ROI 목록 ({rois.length})</h3>
-          {rois.length === 0 && <div className="hint">아직 ROI가 없습니다.</div>}
-          {rois.map((r) => (
-            <div
-              key={r.id}
-              className={`roi-item ${r.id === selectedId ? "sel" : ""}`}
-              onClick={() => setSelectedId(r.id)}
-            >
-              <span className="roi-swatch" style={{ background: r.color }} />
-              <span className="meta">
-                <div className="lab">{r.label}</div>
-                <div className="px">
-                  {r.kind} · {r.pixelCount ?? 0} px
-                </div>
-              </span>
-              <span
-                className="x"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteRoi(r.id);
-                }}
+      <aside className="sidebar right">
+        <div className="panel">
+          <h3>
+            ROI 목록 <span className="count">{rois.length}개</span>
+          </h3>
+          {rois.length === 0 ? (
+            <div className="empty">아직 ROI가 없습니다.</div>
+          ) : (
+            rois.map((r) => (
+              <div
+                key={r.id}
+                className={`roi-item ${r.id === selectedId ? "sel" : ""}`}
+                onClick={() => setSelectedId(r.id)}
               >
-                ✕
-              </span>
-            </div>
-          ))}
+                <span className="roi-swatch" style={{ background: r.color }} />
+                <span className="meta">
+                  <div className="lab">{r.label}</div>
+                  <div className="px">
+                    {r.kind} · {r.pixelCount ?? 0} px
+                  </div>
+                </span>
+                <span
+                  className="x"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteRoi(r.id);
+                  }}
+                  title="삭제"
+                >
+                  ✕
+                </span>
+              </div>
+            ))
+          )}
           {selected && (
             <button
-              style={{ marginTop: 6, width: "100%" }}
+              className="block"
+              style={{ marginTop: 8 }}
               onClick={recomputeSelected}
               title="꼭짓점 편집 후 스펙트럼 다시 계산"
             >
@@ -459,44 +601,47 @@ export default function Page() {
           )}
         </div>
 
-        <div className="section">
+        <div className="panel">
           <h3>평균 반사율 스펙트럼</h3>
           <SpectrumChart wavelengths={wavelengths} rois={rois} highlightId={selectedId} />
         </div>
 
-        <div className="section">
-          <h3>3. 내보내기</h3>
+        <div className="panel">
+          <h3>
+            <span className="step">3</span> 내보내기
+          </h3>
           <div className="field">
             <button
-              className="primary"
+              className="primary block"
               disabled={!cube || !hasSpectra}
               onClick={() => exportSpectraCSV(cube!, rois, baseName)}
             >
               스펙트럼 CSV (wide)
             </button>
           </div>
-          <div className="field">
+          <div className="btn-row" style={{ marginBottom: 0 }}>
             <button
               disabled={!cube || !hasSpectra}
               onClick={() => exportSpectraLongCSV(cube!, rois, baseName)}
             >
-              스펙트럼 CSV (long)
+              CSV (long)
             </button>
-          </div>
-          <div className="field">
             <button
               disabled={!cube || rois.length === 0}
               onClick={() => exportRoiJSON(cube!, rois, baseName)}
             >
-              ROI 좌표 JSON
+              ROI JSON
             </button>
           </div>
         </div>
 
         {status && (
-          <div className={`status ${status.err ? "err" : ""}`}>{status.msg}</div>
+          <div className={`status ${status.err ? "err" : ""}`}>
+            <span className="dot" />
+            <span>{status.msg}</span>
+          </div>
         )}
-      </div>
+      </aside>
     </div>
   );
 }
