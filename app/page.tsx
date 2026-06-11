@@ -460,16 +460,36 @@ export default function Page() {
         redo();
         return;
       }
+      // Ctrl/Cmd +/- : zoom the image (override browser page zoom), Ctrl+0 : fit
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === "=" || e.key === "+") {
+          e.preventDefault();
+          setZoom((z) => Math.min(6, +(z + 0.25).toFixed(2)));
+          return;
+        }
+        if (e.key === "-" || e.key === "_") {
+          e.preventDefault();
+          setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)));
+          return;
+        }
+        if (e.key === "0") {
+          e.preventDefault();
+          fitZoom();
+          return;
+        }
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId)
         deleteRoi(selectedId);
-      if (e.key === "1") setTool("select");
-      if (e.key === "2") setTool("polygon");
-      if (e.key === "3") setTool("bbox");
-      if (e.key === "4") setTool("sam");
+      if (!e.ctrlKey && !e.metaKey) {
+        if (e.key === "1") setTool("select");
+        if (e.key === "2") setTool("polygon");
+        if (e.key === "3") setTool("bbox");
+        if (e.key === "4") setTool("sam");
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, deleteRoi, undo, redo]);
+  }, [selectedId, deleteRoi, undo, redo, fitZoom]);
 
   // Space-bar + drag to pan the image
   useEffect(() => {
@@ -737,14 +757,25 @@ export default function Page() {
                 <span className="val">{Math.round(zoom * 100)}%</span>
               </label>
               <div className="btn-row">
-                <button onClick={fitZoom}>맞춤</button>
-                <button onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))}>
+                <button onClick={fitZoom} title="화면에 맞춤 (Ctrl+0)">
+                  맞춤
+                </button>
+                <button
+                  onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))}
+                  title="축소 (Ctrl+−)"
+                >
                   −
                 </button>
-                <button onClick={() => setZoom((z) => Math.min(6, +(z + 0.25).toFixed(2)))}>
+                <button
+                  onClick={() => setZoom((z) => Math.min(6, +(z + 0.25).toFixed(2)))}
+                  title="확대 (Ctrl+＋)"
+                >
                   ＋
                 </button>
               </div>
+              <p className="hint" style={{ marginTop: 6 }}>
+                Ctrl + ＋/− 확대·축소 · Space + 드래그 이동
+              </p>
             </div>
 
             <button
