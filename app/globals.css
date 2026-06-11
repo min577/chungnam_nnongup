@@ -697,6 +697,52 @@ canvas.annot {
   background: var(--brand-strong);
 }
 
+/* Multi-image navigator (◀ n / N ▶) */
+.img-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(28, 34, 44, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 2px;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow);
+}
+.img-nav .nav-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #eaf0f7;
+  padding: 5px 9px;
+  min-width: 30px;
+  border-radius: 6px;
+}
+.img-nav .nav-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+}
+.img-nav .nav-btn:disabled {
+  opacity: 0.35;
+}
+.img-nav .nav-count {
+  color: #dbe3ee;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 0 5px;
+  min-width: 44px;
+  text-align: center;
+}
+.img-nav .nav-close {
+  color: #9fb0c4;
+  margin-left: 2px;
+}
+.img-nav .nav-close:hover:not(:disabled) {
+  color: #ff7b72;
+  background: rgba(255, 123, 114, 0.14);
+}
+
 /* Top-left label toast (names the ROI just drawn) */
 .label-toast {
   position: absolute;

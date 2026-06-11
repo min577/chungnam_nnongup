@@ -223,6 +223,10 @@ export default function Page() {
     archiveRef.current.delete(id);
     if (d) applyDoc(d);
     setActiveId(id);
+    if (!fittedRef.current.has(id)) {
+      fittedRef.current.add(id);
+      setTimeout(fitZoom, 30);
+    }
   };
   const closeTab = (id: string) => {
     archiveRef.current.delete(id);
@@ -248,6 +252,7 @@ export default function Page() {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasApi = useRef<CanvasHandle>(null);
+  const fittedRef = useRef<Set<string>>(new Set());
 
   // Enable directory picking on the folder input (non-standard attribute)
   useEffect(() => {
@@ -302,112 +307,161 @@ export default function Page() {
     }
   }, [cube, viewMode, bands, grayBand, redBand, nirBand]);
 
-  // ---- File loading (classifies sample / white / dark, calibrates if possible) ----
-  const handleFiles = async (files: FileList | null) => {
-      if (!files || files.length === 0) return;
-      const prevDoc = activeId ? captureLive() : null;
-      const arr = Array.from(files);
-      const hdrs = arr.filter((f) => /\.hdr$/i.test(f.name));
-      const datas = arr.filter((f) => /\.(dat|img|raw)$/i.test(f.name));
-      const hdrFor = (data: File) => {
-        const base = data.name.replace(/\.(dat|img|raw)$/i, "").toLowerCase();
-        return hdrs.find((h) => h.name.replace(/\.hdr$/i, "").toLowerCase() === base);
-      };
-      const maxBySize = (fs: File[]) =>
-        fs.length ? fs.reduce((a, b) => (b.size > a.size ? b : a)) : undefined;
+  // ---- Build a default workspace from a freshly-loaded cube ----
+  const makeDoc = (
+    finalCube: Cube,
+    name: string,
+    mode: "applied" | "pre" | "raw"
+  ): DocState => {
+    const wl = finalCube.header.wavelengths;
+    return {
+      cube: finalCube,
+      baseName: name,
+      calib: mode,
+      bands: finalCube.header.defaultBands ?? [70, 53, 19],
+      viewMode: "rgb",
+      grayBand: wl.length ? nearestBand(wl, 700) : Math.round(finalCube.header.bands / 2),
+      redBand: nearestBand(wl, 670),
+      nirBand: nearestBand(wl, 800),
+      rois: [],
+      selectedId: null,
+      past: [],
+      future: [],
+      labelInput: "",
+      zoom: 1,
+    };
+  };
 
-      const isRef = (f: File) => /WHITEREF|DARKREF/i.test(f.name);
-      const whiteData = datas.find((f) => /WHITEREF/i.test(f.name));
-      const darkData = datas.find((f) => /DARKREF/i.test(f.name));
-      const candidates = datas.filter((f) => !isRef(f));
-      // If references are present the user wants calibration → use the raw cube,
-      // not a pre-made REFLECTANCE file.
-      const rawCandidates =
-        whiteData && darkData
-          ? candidates.filter((f) => !/reflectance/i.test(f.name))
-          : [];
-      const sampleData = maxBySize(
-        rawCandidates.length ? rawCandidates : candidates
+  // ---- Load one capture (sample + optional white/dark) into a reflectance cube ----
+  const loadCapture = async (
+    groupFiles: File[]
+  ): Promise<{ cube: Cube; name: string; mode: "applied" | "pre" | "raw" }> => {
+    const hdrs = groupFiles.filter((f) => /\.hdr$/i.test(f.name));
+    const datas = groupFiles.filter((f) => /\.(dat|img|raw)$/i.test(f.name));
+    const hdrFor = (data: File) => {
+      const base = data.name.replace(/\.(dat|img|raw)$/i, "").toLowerCase();
+      return hdrs.find((h) => h.name.replace(/\.hdr$/i, "").toLowerCase() === base);
+    };
+    const maxBySize = (fs: File[]) =>
+      fs.length ? fs.reduce((a, b) => (b.size > a.size ? b : a)) : undefined;
+
+    const isRef = (f: File) => /WHITEREF|DARKREF/i.test(f.name);
+    const whiteData = datas.find((f) => /WHITEREF/i.test(f.name));
+    const darkData = datas.find((f) => /DARKREF/i.test(f.name));
+    const candidates = datas.filter((f) => !isRef(f));
+    const rawCandidates =
+      whiteData && darkData
+        ? candidates.filter((f) => !/reflectance/i.test(f.name))
+        : [];
+    const sampleData = maxBySize(rawCandidates.length ? rawCandidates : candidates);
+    if (!sampleData || !hdrFor(sampleData))
+      throw new Error("데이터(.dat/.raw/.img)와 같은 이름의 .hdr가 필요합니다.");
+
+    const canCalibrate =
+      whiteData && darkData && hdrFor(whiteData) && hdrFor(darkData);
+    const name = sampleData.name.replace(/\.(dat|img|raw)$/i, "");
+
+    const sampleCube = loadCube(
+      await hdrFor(sampleData)!.text(),
+      await sampleData.arrayBuffer(),
+      name
+    );
+    let finalCube = sampleCube;
+    let mode: "applied" | "pre" | "raw";
+    if (canCalibrate) {
+      const whiteCube = loadCube(
+        await hdrFor(whiteData!)!.text(),
+        await whiteData!.arrayBuffer(),
+        "white"
       );
+      const darkCube = loadCube(
+        await hdrFor(darkData!)!.text(),
+        await darkData!.arrayBuffer(),
+        "dark"
+      );
+      finalCube = calibrateCube(sampleCube, whiteCube, darkCube);
+      mode = "applied";
+    } else if (/reflectance/i.test(sampleData.name) || sampleCube.header.dataType === 4) {
+      mode = "pre";
+    } else {
+      mode = "raw";
+    }
+    return { cube: finalCube, name, mode };
+  };
 
-      if (!sampleData || !hdrFor(sampleData)) {
-        setStatus({
-          msg: "데이터(.dat/.raw/.img)와 같은 이름의 .hdr를 함께 선택하세요.",
-          err: true,
-        });
-        return;
-      }
+  // ---- File loading: groups selected files into captures, one image each ----
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const arr = Array.from(files).filter((f) => /\.(hdr|dat|img|raw)$/i.test(f.name));
+    if (!arr.length) {
+      setStatus({ msg: ".hdr / .dat / .raw / .img 파일을 선택하세요.", err: true });
+      return;
+    }
 
-      const canCalibrate =
-        whiteData && darkData && hdrFor(whiteData) && hdrFor(darkData);
-      const name = sampleData.name.replace(/\.(dat|img|raw)$/i, "");
+    // Group by capture token in the filename (WHITEREF_/DARKREF_/REFLECTANCE_ stripped)
+    const captureKey = (name: string) =>
+      name
+        .replace(/\.(dat|img|raw|hdr)$/i, "")
+        .replace(/^(whiteref|darkref|reflectance|rgbscene|rgbbackground|rgbviewfinder)[_-]?/i, "")
+        .toLowerCase();
+    const groups = new Map<string, File[]>();
+    for (const f of arr) {
+      const k = captureKey(f.name);
+      (groups.get(k) ?? groups.set(k, []).get(k)!).push(f);
+    }
+    const groupList = [...groups.values()];
 
+    const prevDoc = activeId ? captureLive() : null;
+    setStatus({
+      msg:
+        groupList.length > 1
+          ? `${groupList.length}개 이미지 로딩 중…`
+          : "로딩 중…",
+    });
+
+    const loaded: { cube: Cube; name: string; mode: "applied" | "pre" | "raw" }[] = [];
+    let failures = 0;
+    for (const g of groupList) {
       try {
-        setStatus({
-          msg: `${sampleData.name} 로딩 중… (${(sampleData.size / 1e6).toFixed(0)} MB)`,
-        });
-        const sampleCube = loadCube(
-          await hdrFor(sampleData)!.text(),
-          await sampleData.arrayBuffer(),
-          name
-        );
-
-        let finalCube = sampleCube;
-        let mode: "applied" | "pre" | "raw";
-
-        if (canCalibrate) {
-          setStatus({ msg: "WHITE/DARK 레퍼런스로 반사율 보정 중…" });
-          const whiteCube = loadCube(
-            await hdrFor(whiteData!)!.text(),
-            await whiteData!.arrayBuffer(),
-            "white"
-          );
-          const darkCube = loadCube(
-            await hdrFor(darkData!)!.text(),
-            await darkData!.arrayBuffer(),
-            "dark"
-          );
-          finalCube = calibrateCube(sampleCube, whiteCube, darkCube);
-          mode = "applied";
-        } else if (/reflectance/i.test(sampleData.name) || sampleCube.header.dataType === 4) {
-          mode = "pre"; // already-reflectance float cube
-        } else {
-          mode = "raw"; // raw DN, no references supplied
-        }
-
-        if (activeId && prevDoc) archiveRef.current.set(activeId, prevDoc);
-        const newId = `tab_${++tabCounter}`;
-        setTabs((t) => [...t, { id: newId, name }]);
-        setActiveId(newId);
-
-        setCube(finalCube);
-        setCalib(mode);
-        setBaseName(name);
-        setViewMode("rgb");
-        setBands(finalCube.header.defaultBands ?? [70, 53, 19]);
-        // mode-specific band defaults from wavelengths (Red ~670nm, NIR ~800nm)
-        const wl = finalCube.header.wavelengths;
-        setRedBand(nearestBand(wl, 670));
-        setNirBand(nearestBand(wl, 800));
-        setGrayBand(
-          wl.length ? nearestBand(wl, 700) : Math.round(finalCube.header.bands / 2)
-        );
-        setRois([]);
-        setPast([]);
-        setSelectedId(null);
-        setStatus({
-          msg:
-            mode === "applied"
-              ? `반사율 보정 완료 · ${finalCube.header.samples}×${finalCube.header.lines} · ${finalCube.header.bands} 밴드`
-              : mode === "pre"
-              ? `로드 완료 (이미 반사율) · ${finalCube.header.samples}×${finalCube.header.lines} · ${finalCube.header.bands} 밴드`
-              : `원시 DN 로드됨 — 보정 안 됨. WHITEREF/DARKREF를 함께 올리세요.`,
-          err: mode === "raw",
-        });
-        setTimeout(fitZoom, 30);
-      } catch (e) {
-        setStatus({ msg: (e as Error).message, err: true });
+        loaded.push(await loadCapture(g));
+      } catch {
+        failures += 1;
       }
+    }
+    if (!loaded.length) {
+      setStatus({ msg: "불러올 수 있는 이미지가 없습니다. .hdr와 데이터 파일을 함께 선택하세요.", err: true });
+      return;
+    }
+
+    if (activeId && prevDoc) archiveRef.current.set(activeId, prevDoc);
+    const newTabs: { id: string; name: string }[] = [];
+    let firstId: string | null = null;
+    loaded.forEach((cap, i) => {
+      const id = `tab_${++tabCounter}`;
+      newTabs.push({ id, name: cap.name });
+      const doc = makeDoc(cap.cube, cap.name, cap.mode);
+      if (i === 0) {
+        firstId = id;
+        applyDoc(doc);
+        fittedRef.current.add(id);
+      } else {
+        archiveRef.current.set(id, doc);
+      }
+    });
+    setTabs((t) => [...t, ...newTabs]);
+    if (firstId) setActiveId(firstId);
+
+    const calApplied = loaded.filter((l) => l.mode === "applied").length;
+    const calRaw = loaded.filter((l) => l.mode === "raw").length;
+    setStatus({
+      msg:
+        `${loaded.length}개 이미지 로드 완료` +
+        (calApplied ? ` · ${calApplied}개 반사율 보정됨` : "") +
+        (calRaw ? ` · ${calRaw}개 원시 DN(보정 안 됨)` : "") +
+        (failures ? ` · ${failures}개 실패` : ""),
+      err: calRaw > 0,
+    });
+    setTimeout(fitZoom, 30);
   };
 
   // ---- Lazily set the SAM image when entering SAM tool ----
@@ -754,38 +808,6 @@ export default function Page() {
           </div>
         </div>
 
-        {tabs.length > 0 && (
-          <div className="tabs">
-            {tabs.map((t) => (
-              <div
-                key={t.id}
-                className={`tab ${t.id === activeId ? "active" : ""}`}
-                onClick={() => switchTab(t.id)}
-                title={t.name}
-              >
-                <span className="tname">{t.name}</span>
-                <span
-                  className="tx"
-                  title="탭 닫기"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(t.id);
-                  }}
-                >
-                  ✕
-                </span>
-              </div>
-            ))}
-            <button
-              className="tab-add"
-              title="새 캡처 열기"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              ＋
-            </button>
-          </div>
-        )}
-
         <div className="spacer" />
         {cube && (
           <span className="meta-chip">
@@ -1074,6 +1096,42 @@ export default function Page() {
       >
         {cube && (
           <div className="stage-actions">
+            {tabs.length > 0 &&
+              (() => {
+                const idx = tabs.findIndex((t) => t.id === activeId);
+                return (
+                  <div className="img-nav">
+                    <button
+                      className="nav-btn"
+                      title="이전 이미지"
+                      disabled={idx <= 0}
+                      onClick={() => idx > 0 && switchTab(tabs[idx - 1].id)}
+                    >
+                      ◀
+                    </button>
+                    <span className="nav-count">
+                      {idx + 1} / {tabs.length}
+                    </span>
+                    <button
+                      className="nav-btn"
+                      title="다음 이미지"
+                      disabled={idx >= tabs.length - 1}
+                      onClick={() =>
+                        idx < tabs.length - 1 && switchTab(tabs[idx + 1].id)
+                      }
+                    >
+                      ▶
+                    </button>
+                    <button
+                      className="nav-btn nav-close"
+                      title="현재 이미지 닫기"
+                      onClick={() => activeId && closeTab(activeId)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })()}
             <button onClick={undo} disabled={past.length === 0} title="되돌리기 (Ctrl+Z)">
               ↩ 되돌리기
             </button>
