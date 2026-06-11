@@ -189,6 +189,110 @@ export function compositeRGB(
   return new ImageData(rgba, S, L);
 }
 
+/** 1-indexed band whose wavelength is closest to `target` nm. */
+export function nearestBand(wavelengths: number[], target: number): number {
+  if (!wavelengths.length) return 1;
+  let best = 0;
+  for (let i = 1; i < wavelengths.length; i++) {
+    if (Math.abs(wavelengths[i] - target) < Math.abs(wavelengths[best] - target))
+      best = i;
+  }
+  return best + 1;
+}
+
+/** Single-band grayscale image with a 2–98 percentile stretch. */
+export function compositeGray(cube: Cube, band1: number): ImageData {
+  const { header: h, data } = cube;
+  const S = h.samples;
+  const L = h.lines;
+  const n = S * L;
+  const b = Math.min(Math.max(Math.round(band1) - 1, 0), h.bands - 1);
+  const chan = new Float64Array(n);
+  for (let y = 0; y < L; y++)
+    for (let x = 0; x < S; x++) chan[y * S + x] = data[sampleIndex(h, x, y, b)];
+  const [lo, hi] = percentileStretch(chan);
+  const scale = 255 / (hi - lo);
+  const rgba = new Uint8ClampedArray(n * 4);
+  for (let p = 0; p < n; p++) {
+    const v = (chan[p] - lo) * scale;
+    rgba[p * 4] = v;
+    rgba[p * 4 + 1] = v;
+    rgba[p * 4 + 2] = v;
+    rgba[p * 4 + 3] = 255;
+  }
+  return new ImageData(rgba, S, L);
+}
+
+// RdYlGn colour ramp stops for NDVI (red = low, green = high vegetation)
+const NDVI_RAMP: Array<[number, [number, number, number]]> = [
+  [0.0, [165, 0, 38]],
+  [0.25, [244, 109, 67]],
+  [0.5, [255, 255, 191]],
+  [0.75, [102, 189, 99]],
+  [1.0, [0, 104, 55]],
+];
+
+function ndviColor(t: number): [number, number, number] {
+  const u = t < 0 ? 0 : t > 1 ? 1 : t;
+  for (let i = 1; i < NDVI_RAMP.length; i++) {
+    if (u <= NDVI_RAMP[i][0]) {
+      const [t0, c0] = NDVI_RAMP[i - 1];
+      const [t1, c1] = NDVI_RAMP[i];
+      const f = (u - t0) / (t1 - t0 || 1);
+      return [
+        c0[0] + (c1[0] - c0[0]) * f,
+        c0[1] + (c1[1] - c0[1]) * f,
+        c0[2] + (c1[2] - c0[2]) * f,
+      ];
+    }
+  }
+  return NDVI_RAMP[NDVI_RAMP.length - 1][1];
+}
+
+/**
+ * NDVI = (NIR − Red) / (NIR + Red), rendered with an RdYlGn colour ramp.
+ * Pixels with negligible total reflectance (background) are drawn dark so the
+ * leaf stands out. NDVI is normalised from [`lo`, `hi`] (default 0–0.85) to the ramp.
+ */
+export function compositeNDVI(
+  cube: Cube,
+  redBand1: number,
+  nirBand1: number,
+  lo = 0.0,
+  hi = 0.85
+): ImageData {
+  const { header: h, data } = cube;
+  const S = h.samples;
+  const L = h.lines;
+  const n = S * L;
+  const rb = Math.min(Math.max(Math.round(redBand1) - 1, 0), h.bands - 1);
+  const nb = Math.min(Math.max(Math.round(nirBand1) - 1, 0), h.bands - 1);
+  const rgba = new Uint8ClampedArray(n * 4);
+  const span = hi - lo || 1;
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < S; x++) {
+      const p = y * S + x;
+      const red = data[sampleIndex(h, x, y, rb)];
+      const nir = data[sampleIndex(h, x, y, nb)];
+      const sum = red + nir;
+      if (sum < 0.06) {
+        // background / shadow
+        rgba[p * 4] = 24;
+        rgba[p * 4 + 1] = 28;
+        rgba[p * 4 + 2] = 34;
+      } else {
+        const ndvi = (nir - red) / (sum + 1e-6);
+        const [r, g, bl] = ndviColor((ndvi - lo) / span);
+        rgba[p * 4] = r;
+        rgba[p * 4 + 1] = g;
+        rgba[p * 4 + 2] = bl;
+      }
+      rgba[p * 4 + 3] = 255;
+    }
+  }
+  return new ImageData(rgba, S, L);
+}
+
 /** True if point (px, py) lies inside the polygon (ray casting). */
 export function pointInPolygon(px: number, py: number, poly: Point[]): boolean {
   let inside = false;

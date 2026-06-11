@@ -4,15 +4,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AnnotationCanvas, { CanvasHandle, Tool } from "@/components/AnnotationCanvas";
 import SpectrumChart from "@/components/SpectrumChart";
 import { Cube, Point, Roi, ShapeKind } from "@/lib/types";
-import { compositeRGB, loadCube, meanSpectrum } from "@/lib/envi";
+import {
+  compositeRGB,
+  compositeGray,
+  compositeNDVI,
+  nearestBand,
+  loadCube,
+  meanSpectrum,
+} from "@/lib/envi";
 import { calibrateCube } from "@/lib/calibrate";
 import { maskToPolygon } from "@/lib/geometry";
 import * as sam from "@/lib/sam";
 import {
+  exportImagePNG,
   exportRoiJSON,
   exportSpectraCSV,
   exportSpectraLongCSV,
 } from "@/lib/csv";
+
+type ViewMode = "rgb" | "gray" | "ndvi";
 
 const PALETTE = [
   "#2f81f7",
@@ -74,7 +84,14 @@ export default function Page() {
   const [cube, setCube] = useState<Cube | null>(null);
   const [baseName, setBaseName] = useState("capture");
   const [bands, setBands] = useState<[number, number, number]>([70, 53, 19]);
+  const [viewMode, setViewMode] = useState<ViewMode>("rgb");
+  const [grayBand, setGrayBand] = useState(100);
+  const [redBand, setRedBand] = useState(91);
+  const [nirBand, setNirBand] = useState(135);
   const [baseImage, setBaseImage] = useState<ImageData | null>(null);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [logoOk, setLogoOk] = useState(true);
+  const panRef = useRef({ active: false, startX: 0, startY: 0, sl: 0, st: 0 });
 
   const [tool, setTool] = useState<Tool>("polygon");
   const [zoom, setZoom] = useState(1);
@@ -165,15 +182,18 @@ export default function Page() {
     setSamReadyFor(null);
   }, [baseImage]);
 
-  // ---- Recompute RGB composite when cube or bands change ----
+  // ---- Recompute the displayed composite when cube / mode / bands change ----
   useEffect(() => {
     if (!cube) return;
     try {
-      setBaseImage(compositeRGB(cube, bands));
+      if (viewMode === "gray") setBaseImage(compositeGray(cube, grayBand));
+      else if (viewMode === "ndvi")
+        setBaseImage(compositeNDVI(cube, redBand, nirBand));
+      else setBaseImage(compositeRGB(cube, bands));
     } catch (e) {
-      setStatus({ msg: `RGB 합성 실패: ${(e as Error).message}`, err: true });
+      setStatus({ msg: `영상 합성 실패: ${(e as Error).message}`, err: true });
     }
-  }, [cube, bands]);
+  }, [cube, viewMode, bands, grayBand, redBand, nirBand]);
 
   // ---- File loading (classifies sample / white / dark, calibrates if possible) ----
   const handleFiles = useCallback(
@@ -252,6 +272,13 @@ export default function Page() {
         setCalib(mode);
         setBaseName(name);
         setBands(finalCube.header.defaultBands ?? [70, 53, 19]);
+        // mode-specific band defaults from wavelengths (Red ~670nm, NIR ~800nm)
+        const wl = finalCube.header.wavelengths;
+        setRedBand(nearestBand(wl, 670));
+        setNirBand(nearestBand(wl, 800));
+        setGrayBand(
+          wl.length ? nearestBand(wl, 700) : Math.round(finalCube.header.bands / 2)
+        );
         setRois([]);
         setPast([]);
         setSelectedId(null);
@@ -444,6 +471,53 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, deleteRoi, undo, redo]);
 
+  // Space-bar + drag to pan the image
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      setSpaceHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        setSpaceHeld(false);
+        panRef.current.active = false;
+      }
+    };
+    const move = (e: MouseEvent) => {
+      const p = panRef.current;
+      if (!p.active || !stageRef.current) return;
+      stageRef.current.scrollLeft = p.sl - (e.clientX - p.startX);
+      stageRef.current.scrollTop = p.st - (e.clientY - p.startY);
+    };
+    const mouseUp = () => {
+      panRef.current.active = false;
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", mouseUp);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", mouseUp);
+    };
+  }, []);
+
+  const startPan = (e: React.MouseEvent) => {
+    if (!spaceHeld || !stageRef.current) return;
+    panRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      sl: stageRef.current.scrollLeft,
+      st: stageRef.current.scrollTop,
+    };
+  };
+
   const wavelengths = cube?.header.wavelengths ?? [];
   const hasSpectra = rois.some((r) => r.spectrum);
 
@@ -463,10 +537,20 @@ export default function Page() {
     <div className="app">
       <div className="topbar">
         <div className="brand">
-          <div className="mark" />
+          {logoOk ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className="logo"
+              src="/logo-cnaes.png"
+              alt="충청남도농업기술원"
+              onError={() => setLogoOk(false)}
+            />
+          ) : (
+            <div className="mark" />
+          )}
           <div className="titles">
-            <h1>충남농업기술원 · 초분광 ROI 추출기</h1>
-            <p>Specim IQ · Polygon / BBox / SAM 자동분할 → 평균 반사율 CSV</p>
+            <h1>초분광 ROI 추출기</h1>
+            <p>충청남도농업기술원 · Specim IQ 반사율 분석 (Polygon / BBox / SAM)</p>
           </div>
         </div>
         <div className="spacer" />
@@ -543,32 +627,111 @@ export default function Page() {
 
         {cube && (
           <div className="panel">
-            <h3>RGB 표시 밴드</h3>
-            {(["R", "G", "B"] as const).map((ch, i) => (
-              <div className="field" key={ch}>
+            <h3>표시 모드</h3>
+            <div className="seg">
+              {(
+                [
+                  ["rgb", "RGB"],
+                  ["gray", "그레이"],
+                  ["ndvi", "NDVI"],
+                ] as [ViewMode, string][]
+              ).map(([m, lbl]) => (
+                <button
+                  key={m}
+                  className={viewMode === m ? "active" : ""}
+                  onClick={() => setViewMode(m)}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            {viewMode === "rgb" &&
+              (["R", "G", "B"] as const).map((ch, i) => (
+                <div className="field" key={ch}>
+                  <label>
+                    <span>{ch} 밴드</span>
+                    <span className="val">
+                      #{bands[i]} · {wavelengths[bands[i] - 1]?.toFixed(0) ?? "?"} nm
+                    </span>
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={cube.header.bands}
+                    value={bands[i]}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      setBands((b) => {
+                        const nb = [...b] as [number, number, number];
+                        nb[i] = v;
+                        return nb;
+                      });
+                    }}
+                  />
+                </div>
+              ))}
+
+            {viewMode === "gray" && (
+              <div className="field">
                 <label>
-                  <span>{ch} 밴드</span>
+                  <span>밴드</span>
                   <span className="val">
-                    #{bands[i]} · {wavelengths[bands[i] - 1]?.toFixed(0) ?? "?"} nm
+                    #{grayBand} · {wavelengths[grayBand - 1]?.toFixed(0) ?? "?"} nm
                   </span>
                 </label>
                 <input
                   type="range"
                   min={1}
                   max={cube.header.bands}
-                  value={bands[i]}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value, 10);
-                    setBands((b) => {
-                      const nb = [...b] as [number, number, number];
-                      nb[i] = v;
-                      return nb;
-                    });
-                  }}
+                  value={grayBand}
+                  onChange={(e) => setGrayBand(parseInt(e.target.value, 10))}
                 />
               </div>
-            ))}
-            <div className="field">
+            )}
+
+            {viewMode === "ndvi" && (
+              <>
+                <div className="field">
+                  <label>
+                    <span>Red 밴드</span>
+                    <span className="val">
+                      #{redBand} · {wavelengths[redBand - 1]?.toFixed(0) ?? "?"} nm
+                    </span>
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={cube.header.bands}
+                    value={redBand}
+                    onChange={(e) => setRedBand(parseInt(e.target.value, 10))}
+                  />
+                </div>
+                <div className="field">
+                  <label>
+                    <span>NIR 밴드</span>
+                    <span className="val">
+                      #{nirBand} · {wavelengths[nirBand - 1]?.toFixed(0) ?? "?"} nm
+                    </span>
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={cube.header.bands}
+                    value={nirBand}
+                    onChange={(e) => setNirBand(parseInt(e.target.value, 10))}
+                  />
+                </div>
+                <div className="ndvi-legend">
+                  <span>낮음</span>
+                  <span className="ramp" />
+                  <span>높음(식생)</span>
+                </div>
+                <p className="hint">NDVI = (NIR − Red) / (NIR + Red) · 잎은 0.6–0.9</p>
+              </>
+            )}
+
+            <div className="field" style={{ marginTop: 4 }}>
               <label>
                 <span>확대</span>
                 <span className="val">{Math.round(zoom * 100)}%</span>
@@ -583,6 +746,16 @@ export default function Page() {
                 </button>
               </div>
             </div>
+
+            <button
+              className="block"
+              disabled={!baseImage}
+              onClick={() =>
+                baseImage && exportImagePNG(baseImage, `${baseName}_${viewMode}.png`)
+              }
+            >
+              🖼 현재 화면 이미지 저장 (PNG)
+            </button>
           </div>
         )}
 
@@ -645,10 +818,35 @@ export default function Page() {
             </button>
           )}
         </div>
+
+        <div className="spacer" />
+
+        <div className="panel credits">
+          <h3>개발 · 소속</h3>
+          <div className="logos">
+            {/* eslint-disable @next/next/no-img-element */}
+            <img
+              src="/logo-agis.png"
+              alt="AGIS · Agriculture Intelligence Systems Lab"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            <img
+              src="/logo-khu.png"
+              alt="Kyung Hee University"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            {/* eslint-enable @next/next/no-img-element */}
+          </div>
+        </div>
       </aside>
 
       {/* CENTER STAGE */}
-      <main className="stage" ref={stageRef}>
+      <main
+        className="stage"
+        ref={stageRef}
+        onMouseDown={startPan}
+        style={{ cursor: spaceHeld ? "grab" : undefined }}
+      >
         {cube && (
           <div className="stage-actions">
             <button onClick={undo} disabled={past.length === 0} title="되돌리기 (Ctrl+Z)">
@@ -712,6 +910,7 @@ export default function Page() {
             rois={rois}
             selectedId={selectedId}
             samBusy={samBusy}
+            panMode={spaceHeld}
             draftColor={PALETTE[roiCounter % PALETTE.length]}
             onCommitShape={addRoi}
             onSamClick={handleSamClick}

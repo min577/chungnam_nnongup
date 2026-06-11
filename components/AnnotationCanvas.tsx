@@ -28,6 +28,7 @@ interface Props {
   rois: Roi[];
   selectedId: string | null;
   samBusy: boolean;
+  panMode: boolean;
   draftColor: string;
   onCommitShape: (kind: ShapeKind, points: Point[]) => void;
   onSamClick: (p: Point) => void;
@@ -52,6 +53,7 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
     rois,
     selectedId,
     samBusy,
+    panMode,
     draftColor,
     onCommitShape,
     onSamClick,
@@ -262,6 +264,7 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
   };
 
   const handleDown = (e: React.MouseEvent) => {
+    if (panMode) return;
     const p = toImage(e);
     if (tool === "select") {
       const v = findVertex(p);
@@ -303,6 +306,7 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
   };
 
   const handleClick = (e: React.MouseEvent) => {
+    if (panMode) return;
     const p = toImage(e);
     if (tool === "polygon") {
       if (
@@ -324,6 +328,10 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (panMode) {
+      e.preventDefault();
+      return;
+    }
     // Right-click completes the polygon (and never shows the browser menu here)
     if (tool === "polygon" && draftPoly.length >= 1) {
       e.preventDefault();
@@ -349,7 +357,13 @@ const AnnotationCanvas = forwardRef<CanvasHandle, Props>(function AnnotationCanv
         onContextMenu={handleContextMenu}
         onMouseLeave={() => setMouse(null)}
         style={{
-          cursor: samBusy ? "wait" : tool === "select" ? "default" : "crosshair",
+          cursor: panMode
+            ? "grab"
+            : samBusy
+            ? "wait"
+            : tool === "select"
+            ? "default"
+            : "crosshair",
         }}
       />
     </div>

@@ -61,6 +61,23 @@ export function exportSpectraLongCSV(cube: Cube, rois: Roi[], baseName: string) 
   triggerDownload(lines.join("\n"), `${baseName}_spectra_long.csv`, "text/csv");
 }
 
+/** Save the currently-rendered composite (RGB / gray / NDVI) as a PNG. */
+export function exportImagePNG(image: ImageData, filename: string) {
+  const c = document.createElement("canvas");
+  c.width = image.width;
+  c.height = image.height;
+  c.getContext("2d")!.putImageData(image, 0, 0);
+  c.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, "image/png");
+}
+
 /** Export ROI geometry + labels as JSON (re-loadable / archival). */
 export function exportRoiJSON(cube: Cube, rois: Roi[], baseName: string) {
   const payload = {
