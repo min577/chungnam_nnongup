@@ -804,25 +804,10 @@ export default function Page() {
           ) : (
             <div className="mark" />
           )}
+          <span className="brand-div" />
           <div className="titles">
             <h1>초분광 ROI 추출기</h1>
-            <p>충청남도농업기술원 · Specim IQ 반사율 분석 (Polygon / BBox / SAM)</p>
-          </div>
-          <div className="affil" title="개발: AGIS Lab · 경희대학교">
-            {/* eslint-disable @next/next/no-img-element */}
-            <img
-              className="affil-logo"
-              src="/logo-agis.png"
-              alt="AGIS Lab"
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-            <img
-              className="affil-logo"
-              src="/logo-khu.png"
-              alt="경희대학교"
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-            {/* eslint-enable @next/next/no-img-element */}
+            <p>충청남도농업기술원 · Specim IQ</p>
           </div>
         </div>
 
@@ -837,6 +822,22 @@ export default function Page() {
               : ""}
           </span>
         )}
+        <div className="affil" title="개발: AGIS Lab · 경희대학교">
+          {/* eslint-disable @next/next/no-img-element */}
+          <img
+            className="affil-logo"
+            src="/logo-agis.png"
+            alt="AGIS Lab"
+            onError={(e) => (e.currentTarget.style.display = "none")}
+          />
+          <img
+            className="affil-logo"
+            src="/logo-khu.png"
+            alt="경희대학교"
+            onError={(e) => (e.currentTarget.style.display = "none")}
+          />
+          {/* eslint-enable @next/next/no-img-element */}
+        </div>
       </div>
 
       {/* LEFT SIDEBAR */}
